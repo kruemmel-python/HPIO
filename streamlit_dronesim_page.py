@@ -39,9 +39,9 @@ def bilinear_sample(arr: np.ndarray, x: float, y: float) -> float:
 
 
 def box_blur(field: np.ndarray) -> np.ndarray:
-    """Kleiner 3x3 Box-Blur als Relaxation (ohne externe Abhängigkeiten)."""
+    """3x3 Box-Blur ohne Randplateaus (nutzt reflektierendes Padding)."""
     h, w = field.shape
-    p = np.pad(field, 1, mode="edge")
+    p = np.pad(field, 1, mode="reflect")
     acc = (
         p[0:h,   0:w] + p[0:h,   1:w+1] + p[0:h,   2:w+2] +
         p[1:h+1, 0:w] + p[1:h+1, 1:w+1] + p[1:h+1, 2:w+2] +
@@ -148,21 +148,38 @@ class SwarmController:
                     diff = d.pos - o.pos
                     dist = float(np.linalg.norm(diff) + 1e-8)
                     if 0 < dist < self.avoidance_radius:
-                        avoid += (diff / dist)
+                        w_avoid = 1.0 - (dist / self.avoidance_radius)
+                        avoid += w_avoid * (diff / dist)
+
+            # weiche Abstoßung von den 4 Wänden
+            edge_r = 8.0
+            k_edge = 0.018
+            repel = np.zeros(2, dtype=np.float32)
+
+            if d.pos[0] < edge_r:
+                repel[0] += (edge_r - d.pos[0]) / edge_r
+            elif d.pos[0] > (w - 1 - edge_r):
+                repel[0] -= (d.pos[0] - (w - 1 - edge_r)) / edge_r
+
+            if d.pos[1] < edge_r:
+                repel[1] += (edge_r - d.pos[1]) / edge_r
+            elif d.pos[1] > (h - 1 - edge_r):
+                repel[1] -= (d.pos[1] - (h - 1 - edge_r)) / edge_r
 
             # Antriebsvektor (Gewichte gern im UI tunen)
             drive = (
                 0.65 * grad_dir +
                 self.curiosity * 0.35 * noise +
                 self.coherence_gain * coh_vec +
-                0.4 * avoid
+                0.4 * avoid +
+                k_edge * repel
             )
 
             # Velocity-Update (Trägheit) + Schritt
             d.vel = self.momentum * d.vel + (1.0 - self.momentum) * drive
             # sanfte Kappung
             sp = np.linalg.norm(d.vel) + 1e-8
-            max_sp = max(0.5, 3.0 * self.step)
+            max_sp = max(0.4, 1.5 * self.step)
             if sp > max_sp:
                 d.vel *= (max_sp / sp)
 
@@ -193,6 +210,9 @@ class SwarmController:
             blurred = box_blur(self.field)
             a = float(self.relax_alpha)
             self.field = (1.0 - a) * self.field + a * blurred
+
+        # globalen DC-Bias entfernen
+        self.field -= float(self.field.mean())
 
         self.iteration += 1
 
