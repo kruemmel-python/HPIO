@@ -202,9 +202,11 @@ class HPIORecorder:
         else:
             self.scatter.set_offsets(agents_px)
 
-    def frame(self, field_phi: np.ndarray, agents_px: np.ndarray):
+    def frame(self, field_phi: np.ndarray, agents_px: np.ndarray, *, title: str | None = None):
         self._update_left(field_phi, agents_px)
         self._update_right()
+        if title is not None:
+            self.axL.set_title(title, fontsize=11)
         if self.writer.backend == "ffmpeg":
             self.fig.canvas.draw()
             self.writer.add_frame_from_figure()
@@ -277,7 +279,10 @@ class RecordingRunner:
             if (it % self.viz_every) == 0 or it == self.cfg.iters:
                 pts = np.stack([a.pos for a in self.opt.agents], axis=0)
                 agents_px = self._world_to_grid_np(pts)
-                self.recorder.frame(self.opt.field.phi, agents_px)
+                title = None
+                if getattr(self.cfg, "overlay", False) or hasattr(self.cfg, "overlay"):
+                    title = f"|Φ| (log) + Agents  •  iter={it}  •  best={self.opt.gbest_val:.6g}"
+                self.recorder.frame(self.opt.field.phi, agents_px, title=title)
 
             if self.opt.gbest_val < last_best - self.cfg.early_tol:
                 last_best = self.opt.gbest_val
@@ -318,6 +323,9 @@ def main():
     ap.add_argument("--size", type=parse_size, default=(1280, 720), help="Videogröße WIDTHxHEIGHT")
     ap.add_argument("--viz-freq", type=int, default=1, help="Jede n-te Iteration als Frame")
     ap.add_argument("--seed", type=int, default=123, help="Zufalls-Seed")
+    ap.add_argument("--report-every", type=int, default=None, help="Alle n Iterationen loggen (überschreibt cfg.report_every)")
+    ap.add_argument("--overlay", action="store_true", help="Zeige Iteration & Bestwert live im Plot")
+    ap.add_argument("--ackley-tight", action="store_true", help="Aggressives Tuning für Ackley (GPU empfohlen)")
     args = ap.parse_args()
 
     out_path = Path(args.video)
@@ -327,7 +335,20 @@ def main():
 
     cfg = hpio.build_config(args.objective, use_gpu=args.gpu, visualize=False)
     cfg.seed = args.seed
-    cfg.report_every = max(10, cfg.report_every)
+    cfg.overlay = args.overlay  # kleiner Bequemlichkeits-Hack
+
+    # Report-Intervall überschreiben?
+    if args.report_every is not None:
+        cfg.report_every = max(1, args.report_every)
+    else:
+        cfg.report_every = max(10, cfg.report_every)  # wie bisher
+
+    # Aggressives Ackley-Tuning (deine früheren „guten“ Werte)
+    if args.ackley_tight and args.objective == "ackley":
+        cfg.field.relax_alpha = 0.30
+        cfg.agent.deposit_sigma = 1.5
+        cfg.anneal_curiosity_to = 0.14
+        cfg.iters = max(cfg.iters, 400)
 
     recorder = HPIORecorder(writer=writer, grid_size=cfg.field.grid_size, text_lines=28)
     runner = RecordingRunner(cfg, recorder=recorder, viz_every=max(1, args.viz_freq))
