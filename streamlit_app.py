@@ -561,7 +561,7 @@ def page_run(state: AppState) -> None:
     with left:
         st.markdown("### Heatmap & Agents")
         if state.last_plot_png:
-            st.image(state.last_plot_png, use_container_width=True)
+            st.image(state.last_plot_png, width="stretch")
         else:
             st.info("Noch keine Visualisierung – Run starten oder Schritt ausführen.")
         render_parameter_snapshot(cfg)
