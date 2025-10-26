@@ -1,190 +1,378 @@
-# hpio_bench.py
-# Benchmark-Suite für HPIO (CPU/GPU, Mehrfach-Seeds, CSV + Plots)
-# Python 3.12
 from __future__ import annotations
 
-import argparse, csv, time, importlib, sys, statistics as stats
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Literal
+import dataclasses as dc
+from typing import Callable, Literal, Tuple
+
+import numpy as np
 
 ObjectiveName = Literal["rastrigin", "ackley", "himmelblau"]
 
-# Wir erwarten hpio.py im gleichen Ordner
-try:
-    hpio = importlib.import_module("hpio")
-except Exception as e:
-    print("Fehler: hpio.py konnte nicht importiert werden. Lege hpio_bench.py neben hpio.py.", file=sys.stderr)
-    raise
+
+# ---------------------------------------------------------------------------
+# Konfigurations-Dataclasses
+# ---------------------------------------------------------------------------
+@dataclass
+class FieldParams:
+    grid_size: tuple[int, int] = (160, 160)
+    relax_alpha: float = 0.25
+    evap: float = 0.04
+    kernel_sigma: float = 1.6
+
 
 @dataclass
-class BenchResult:
-    objective: str
-    seed: int
-    use_gpu: bool
-    visualize: bool
-    best_val: float
-    best_pos_x: float
-    best_pos_y: float
-    iters_used: int
-    elapsed_s: float
+class AgentParams:
+    count: int = 64
+    step: float = 0.35
+    curiosity: float = 0.45
+    momentum: float = 0.65
 
-def run_one(objective: ObjectiveName, seed: int, use_gpu: bool, visualize: bool=False) -> BenchResult:
-    # Konfiguration aufbauen (wie in hpio.build_config), aber Seed überschreiben
-    cfg = hpio.build_config(objective, use_gpu=use_gpu, visualize=visualize)
-    cfg.seed = seed
-    # Für Benchmark: Visualisierung i. d. R. aus
+
+@dataclass
+class HPIOConfig:
+    objective: ObjectiveName
+    iters: int = 420
+    seed: int = 123
+    use_gpu: bool = False
+    visualize: bool = False
+    bounds: tuple[tuple[float, float], tuple[float, float]] = ((-5.5, 5.5), (-5.5, 5.5))
+    report_every: int = 20
+    anneal_step_from: float = 1.0
+    anneal_step_to: float = 0.2
+    anneal_curiosity_from: float = 1.0
+    anneal_curiosity_to: float = 0.25
+    early_patience: int = 90
+    early_tol: float = 1e-4
+    polish_h: float = 1e-3
+    field: FieldParams = dc.field(default_factory=FieldParams)
+    agent: AgentParams = dc.field(default_factory=AgentParams)
+
+
+# ---------------------------------------------------------------------------
+# Zielfunktionen
+# ---------------------------------------------------------------------------
+def rastrigin_fn(x: np.ndarray) -> float:
+    a = 10.0
+    return a * 2 + np.sum(x**2 - a * np.cos(2 * np.pi * x))
+
+
+def ackley_fn(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=np.float64)
+    a = 20.0
+    b = 0.2
+    c = 2 * np.pi
+    s1 = np.sum(x**2)
+    s2 = np.sum(np.cos(c * x))
+    term1 = -a * np.exp(-b * np.sqrt(s1 / 2.0))
+    term2 = -np.exp(s2 / 2.0)
+    return term1 + term2 + a + np.e
+
+
+def himmelblau_fn(x: np.ndarray) -> float:
+    x1, x2 = x
+    return (x1**2 + x2 - 11) ** 2 + (x1 + x2**2 - 7) ** 2
+
+
+OBJECTIVES: dict[ObjectiveName, Callable[[np.ndarray], float]] = {
+    "rastrigin": rastrigin_fn,
+    "ackley": ackley_fn,
+    "himmelblau": himmelblau_fn,
+}
+
+
+# ---------------------------------------------------------------------------
+# Hilfsfunktionen
+# ---------------------------------------------------------------------------
+def _gaussian_kernel_1d(sigma: float) -> np.ndarray:
+    size = max(3, int(round(6 * sigma)))
+    if size % 2 == 0:
+        size += 1
+    radius = size // 2
+    xs = np.arange(-radius, radius + 1, dtype=np.float64)
+    kernel = np.exp(-(xs**2) / (2.0 * sigma**2))
+    kernel /= np.sum(kernel)
+    return kernel
+
+
+def _apply_conv1d(arr: np.ndarray, kernel: np.ndarray, axis: int) -> np.ndarray:
+    pad = len(kernel) // 2
+    pad_width = [(0, 0)] * arr.ndim
+    pad_width[axis] = (pad, pad)
+    padded = np.pad(arr, pad_width, mode="edge")
+
+    def _conv_line(line: np.ndarray) -> np.ndarray:
+        return np.convolve(line, kernel, mode="valid")
+
+    return np.apply_along_axis(_conv_line, axis, padded)
+
+
+# ---------------------------------------------------------------------------
+# Feld- und Agentenimplementierung
+# ---------------------------------------------------------------------------
+@dataclass
+class AgentState:
+    pos: np.ndarray
+    vel: np.ndarray
+    best_pos: np.ndarray
+    best_val: float
+
+
+class Field:
+    def __init__(self, params: FieldParams, bounds: tuple[Tuple[float, float], Tuple[float, float]]):
+        self.p = params
+        self.bounds = bounds
+        gy, gx = params.grid_size[1], params.grid_size[0]
+        self.phi = np.zeros((gy, gx), dtype=np.float64)
+        self._kernel = _gaussian_kernel_1d(max(1e-3, params.kernel_sigma))
+
+    def world_to_grid(self, pos: np.ndarray) -> tuple[int, int]:
+        gx = self._grid_x(pos[0])
+        gy = self._grid_y(pos[1])
+        return gx, gy
+
+    def world_to_grid_float(self, pos: np.ndarray) -> tuple[float, float]:
+        return self._grid_xf(pos[0]), self._grid_yf(pos[1])
+
+    def _grid_xf(self, x: float) -> float:
+        xmin, xmax = self.bounds[0]
+        nx = (x - xmin) / (xmax - xmin)
+        nx = np.clip(nx, 0.0, 1.0)
+        return nx * (self.p.grid_size[0] - 1)
+
+    def _grid_yf(self, y: float) -> float:
+        ymin, ymax = self.bounds[1]
+        ny = (y - ymin) / (ymax - ymin)
+        ny = np.clip(ny, 0.0, 1.0)
+        return ny * (self.p.grid_size[1] - 1)
+
+    def _grid_x(self, x: float) -> int:
+        return int(round(self._grid_xf(x)))
+
+    def _grid_y(self, y: float) -> int:
+        return int(round(self._grid_yf(y)))
+
+    def deposit(self, pos: np.ndarray, amount: float) -> None:
+        gx, gy = self.world_to_grid(pos)
+        gy = int(np.clip(gy, 0, self.phi.shape[0] - 1))
+        gx = int(np.clip(gx, 0, self.phi.shape[1] - 1))
+        self.phi[gy, gx] += amount
+
+    def sample_gradient(self, pos: np.ndarray) -> np.ndarray:
+        gx, gy = self.world_to_grid_float(pos)
+        ix = int(np.clip(round(gx), 1, self.phi.shape[1] - 2))
+        iy = int(np.clip(round(gy), 1, self.phi.shape[0] - 2))
+
+        dphidx = (self.phi[iy, ix + 1] - self.phi[iy, ix - 1]) * 0.5
+        dphidy = (self.phi[iy + 1, ix] - self.phi[iy - 1, ix]) * 0.5
+
+        xmin, xmax = self.bounds[0]
+        ymin, ymax = self.bounds[1]
+        scale_x = (self.p.grid_size[0] - 1) / (xmax - xmin)
+        scale_y = (self.p.grid_size[1] - 1) / (ymax - ymin)
+        return np.array([dphidx * scale_x, dphidy * scale_y], dtype=np.float64)
+
+    def relax(self) -> None:
+        blurred = _apply_conv1d(self.phi, self._kernel, axis=1)
+        blurred = _apply_conv1d(blurred, self._kernel, axis=0)
+        self.phi *= (1.0 - self.p.evap)
+        self.phi += self.p.relax_alpha * (blurred - self.phi)
+
+
+# ---------------------------------------------------------------------------
+# Optimierer
+# ---------------------------------------------------------------------------
+class HPIO:
+    def __init__(self, cfg: HPIOConfig):
+        self.cfg = cfg
+        self.rng = np.random.default_rng(cfg.seed)
+        self.f = OBJECTIVES[cfg.objective]
+        self.bounds = cfg.bounds
+        self.field = Field(cfg.field, bounds=cfg.bounds)
+        self.agents: list[AgentState] = []
+        self._init_agents()
+        self.gbest_pos = self.agents[0].best_pos.copy()
+        self.gbest_val = self.agents[0].best_val
+        for a in self.agents:
+            if a.best_val < self.gbest_val:
+                self.gbest_val = a.best_val
+                self.gbest_pos = a.best_pos.copy()
+
+    def _init_agents(self) -> None:
+        (xmin, xmax), (ymin, ymax) = self.bounds
+        for _ in range(self.cfg.agent.count):
+            pos = np.array([
+                self.rng.uniform(xmin, xmax),
+                self.rng.uniform(ymin, ymax),
+            ], dtype=np.float64)
+            val = float(self.f(pos))
+            agent = AgentState(
+                pos=pos,
+                vel=np.zeros(2, dtype=np.float64),
+                best_pos=pos.copy(),
+                best_val=val,
+            )
+            self.agents.append(agent)
+
+    def _clip_position(self, pos: np.ndarray) -> np.ndarray:
+        (xmin, xmax), (ymin, ymax) = self.bounds
+        pos[0] = np.clip(pos[0], xmin, xmax)
+        pos[1] = np.clip(pos[1], ymin, ymax)
+        return pos
+
+    def _deposit_from_agent(self, agent: AgentState, amplitude: float) -> None:
+        amount = amplitude * (1.0 / (1.0 + agent.best_val))
+        self.field.deposit(agent.best_pos, amount)
+
+    def _move_agent(self, agent: AgentState, *, step_scale: float, curiosity_scale: float) -> None:
+        grad = self.field.sample_gradient(agent.pos)
+        if np.linalg.norm(grad) > 1e-9:
+            grad = grad / (np.linalg.norm(grad) + 1e-9)
+        random_vec = self.rng.normal(size=2)
+        random_vec /= np.linalg.norm(random_vec) + 1e-9
+
+        target_step = self.cfg.agent.step * step_scale
+        curiosity = self.cfg.agent.curiosity * curiosity_scale
+        momentum = self.cfg.agent.momentum
+
+        direction = -grad * target_step + curiosity * random_vec
+        agent.vel = momentum * agent.vel + (1.0 - momentum) * direction
+        agent.pos = self._clip_position(agent.pos + agent.vel)
+
+        val = float(self.f(agent.pos))
+        if val < agent.best_val:
+            agent.best_val = val
+            agent.best_pos = agent.pos.copy()
+            if val < self.gbest_val:
+                self.gbest_val = val
+                self.gbest_pos = agent.pos.copy()
+
+    def run(self) -> tuple[np.ndarray, float]:
+        no_improve = 0
+        last_best = self.gbest_val
+
+        for it in range(self.cfg.iters):
+            t = it / max(1, self.cfg.iters - 1)
+            step_scale = (1.0 - t) * self.cfg.anneal_step_from + t * self.cfg.anneal_step_to
+            curiosity_scale = (1.0 - t) * self.cfg.anneal_curiosity_from + t * self.cfg.anneal_curiosity_to
+
+            vals = np.array([a.best_val for a in self.agents], dtype=np.float64)
+            ranks = np.argsort(np.argsort(vals))
+            if len(self.agents) > 1:
+                norm = (len(self.agents) - 1)
+                amp = 0.8 + 0.5 * (1.0 - ranks / norm)
+            else:
+                amp = np.array([1.0])
+
+            for agent, amp_scale in zip(self.agents, amp):
+                self._deposit_from_agent(agent, float(amp_scale))
+
+            self.field.relax()
+
+            for agent in self.agents:
+                self._move_agent(agent, step_scale=step_scale, curiosity_scale=curiosity_scale)
+
+            if self.gbest_val < last_best - self.cfg.early_tol:
+                last_best = self.gbest_val
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if no_improve > self.cfg.early_patience:
+                break
+
+        pos, val = self.local_quadratic_polish(self.f, self.gbest_pos, h=self.cfg.polish_h)
+        if val < self.gbest_val:
+            self.gbest_pos = pos
+            self.gbest_val = val
+
+        return self.gbest_pos.copy(), float(self.gbest_val)
+
+    @staticmethod
+    def local_quadratic_polish(f: Callable[[np.ndarray], float], pos: np.ndarray, h: float = 1e-3) -> tuple[np.ndarray, float]:
+        pos = np.asarray(pos, dtype=np.float64)
+        h = float(max(1e-6, h))
+
+        def eval_at(offset: tuple[float, float]) -> float:
+            return float(f(pos + np.array(offset, dtype=np.float64)))
+
+        f00 = eval_at((0.0, 0.0))
+        fx1 = eval_at((h, 0.0))
+        fx_1 = eval_at((-h, 0.0))
+        fy1 = eval_at((0.0, h))
+        fy_1 = eval_at((0.0, -h))
+        fxy = eval_at((h, h))
+        fx_y = eval_at((h, -h))
+        f_x_y = eval_at((-h, -h))
+        f_xy = eval_at((-h, h))
+
+        grad_x = (fx1 - fx_1) / (2 * h)
+        grad_y = (fy1 - fy_1) / (2 * h)
+
+        hxx = (fx1 - 2 * f00 + fx_1) / (h**2)
+        hyy = (fy1 - 2 * f00 + fy_1) / (h**2)
+        hxy = (fxy - fx_y - f_xy + f_x_y) / (4 * h**2)
+
+        hessian = np.array([[hxx, hxy], [hxy, hyy]], dtype=np.float64)
+        grad = np.array([grad_x, grad_y], dtype=np.float64)
+
+        try:
+            delta = np.linalg.solve(hessian, grad)
+            cand = pos - delta
+            val = float(f(cand))
+            return cand, val
+        except np.linalg.LinAlgError:
+            return pos.copy(), float(f00)
+
+
+# ---------------------------------------------------------------------------
+# Konfigurations-Factory
+# ---------------------------------------------------------------------------
+def build_config(objective: ObjectiveName, *, use_gpu: bool = False, visualize: bool = False) -> HPIOConfig:
+    if objective not in OBJECTIVES:
+        raise ValueError(f"Unbekannte Zielfunktion: {objective}")
+
+    cfg = HPIOConfig(objective=objective)
+    cfg.use_gpu = use_gpu
     cfg.visualize = visualize
 
-    # Wir zählen effektiv genutzte Iterationen über Early-Stopping-Heuristik:
-    # Dazu instrumentieren wir minimal HPIO.run() via Subklasse (kein Edit von hpio.py nötig)
-    class HPIOCount(hpio.HPIO):
-        def run(self):
-            start = time.perf_counter()
-            it_before = getattr(self, "_iters_done", 0)
-            # Mini-Hook: wir zählen Iterationsfortschritt, indem wir die Originalschleife laufen lassen
-            # und die globale Variable anhand des Early-Stopping-Logs approximieren.
-            # Sauberer Weg: wir messen Zeit & fügen eine Zählung in der Schleife hinzu.
-            # Dafür nutzen wir Monkeypatch: wir ersetzen self._move_agent temporär, um iter++ an einem safe point zu setzen.
-            self._iters_done = 0
-            orig_move = self._move_agent
-            def patched_move_agent(a, step_scale, curiosity_scale):
-                orig_move(a, step_scale, curiosity_scale)
-                # nur einmal pro Agent zu zählen wäre falsch -> wir zählen später aus Log; stattdessen hooken wir relax():
-            orig_relax = self.field.relax
-            def patched_relax():
-                self._iters_done += 1
-                orig_relax()
-            self.field.relax = patched_relax  # type: ignore[attr-defined]
+    if objective == "rastrigin":
+        cfg.bounds = ((-5.12, 5.12), (-5.12, 5.12))
+        cfg.iters = 420
+        cfg.agent.count = 80
+        cfg.field.grid_size = (180, 180)
+        cfg.anneal_step_from = 1.1
+        cfg.anneal_step_to = 0.18
+        cfg.anneal_curiosity_from = 0.9
+        cfg.anneal_curiosity_to = 0.2
+    elif objective == "ackley":
+        cfg.bounds = ((-5.0, 5.0), (-5.0, 5.0))
+        cfg.iters = 380
+        cfg.agent.count = 72
+        cfg.field.grid_size = (170, 170)
+        cfg.anneal_step_from = 0.9
+        cfg.anneal_step_to = 0.22
+        cfg.anneal_curiosity_from = 1.0
+        cfg.anneal_curiosity_to = 0.3
+    elif objective == "himmelblau":
+        cfg.bounds = ((-6.0, 6.0), (-6.0, 6.0))
+        cfg.iters = 320
+        cfg.agent.count = 60
+        cfg.field.grid_size = (150, 150)
+        cfg.anneal_step_from = 0.8
+        cfg.anneal_step_to = 0.2
+        cfg.anneal_curiosity_from = 0.8
+        cfg.anneal_curiosity_to = 0.25
+        cfg.early_patience = 70
 
-            best_pos, best_val = super().run()
+    return cfg
 
-            # Restore
-            self.field.relax = orig_relax  # type: ignore[attr-defined]
 
-            elapsed = time.perf_counter() - start
-            return best_pos, best_val, self._iters_done, elapsed
-
-    opt = HPIOCount(cfg)
-    best_pos, best_val, iters_used, elapsed_s = opt.run()
-
-    return BenchResult(
-        objective=objective,
-        seed=seed,
-        use_gpu=use_gpu,
-        visualize=visualize,
-        best_val=float(best_val),
-        best_pos_x=float(best_pos[0]),
-        best_pos_y=float(best_pos[1]),
-        iters_used=int(iters_used),
-        elapsed_s=float(elapsed_s),
-    )
-
-def write_csv(path: Path, rows: list[BenchResult]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["objective","seed","use_gpu","visualize","best_val","best_pos_x","best_pos_y","iters_used","elapsed_s"])
-        for r in rows:
-            w.writerow([r.objective, r.seed, int(r.use_gpu), int(r.visualize),
-                        f"{r.best_val:.12g}", f"{r.best_pos_x:.9g}", f"{r.best_pos_y:.9g}",
-                        r.iters_used, f"{r.elapsed_s:.6f}"])
-
-def try_plot(objective: str, rows_cpu: list[BenchResult], rows_gpu: list[BenchResult], outdir: Path) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except Exception:
-        print("[bench] matplotlib nicht verfügbar – überspringe Plot.")
-        return
-    # einfache Boxplots best_val & elapsed
-    plt.figure(figsize=(7.2, 4.4))
-    data_vals = []
-    labels = []
-    if rows_cpu:
-        data_vals.append([r.best_val for r in rows_cpu]); labels.append("CPU best_val")
-    if rows_gpu:
-        data_vals.append([r.best_val for r in rows_gpu]); labels.append("GPU best_val")
-    if not data_vals:
-        return
-    plt.boxplot(data_vals, labels=labels, showmeans=True)
-    plt.title(f"HPIO {objective} – Bestwerte (n={len(rows_cpu) or len(rows_gpu)})")
-    plt.ylabel("best_val (kleiner ist besser)")
-    plt.tight_layout()
-    plt.savefig(outdir / f"hpio_{objective}_bestvals.png", dpi=140)
-
-    plt.figure(figsize=(7.2, 4.4))
-    data_t = []
-    labels_t = []
-    if rows_cpu:
-        data_t.append([r.elapsed_s for r in rows_cpu]); labels_t.append("CPU Zeit [s]")
-    if rows_gpu:
-        data_t.append([r.elapsed_s for r in rows_gpu]); labels_t.append("GPU Zeit [s]")
-    if data_t:
-        plt.boxplot(data_t, labels=labels_t, showmeans=True)
-        plt.title(f"HPIO {objective} – Laufzeit (n={len(rows_cpu) or len(rows_gpu)})")
-        plt.ylabel("Sekunden")
-        plt.tight_layout()
-        plt.savefig(outdir / f"hpio_{objective}_times.png", dpi=140)
-
-def summary_print(rows_cpu: list[BenchResult], rows_gpu: list[BenchResult], objective: str) -> None:
-    def stats_line(rows, tag):
-        if not rows:
-            return f"{tag}: —"
-        vals = [r.best_val for r in rows]
-        times = [r.elapsed_s for r in rows]
-        iters = [r.iters_used for r in rows]
-        return (f"{tag}: best_val median={stats.median(vals):.3g}, mean={stats.fmean(vals):.3g} | "
-                f"time median={stats.median(times):.3g}s | iters median={stats.median(iters)}")
-    print(f"\n[{objective}] Benchmark-Zusammenfassung")
-    print(stats_line(rows_cpu, "CPU"))
-    print(stats_line(rows_gpu, "GPU"))
-
-def main():
-    ap = argparse.ArgumentParser(description="HPIO Benchmark-Suite")
-    ap.add_argument("objective", choices=["rastrigin","ackley","himmelblau"], help="Zielfunktion")
-    ap.add_argument("--seeds", type=int, default=10, help="Anzahl Seeds (Runs)")
-    ap.add_argument("--start-seed", type=int, default=100, help="Startwert Seed")
-    ap.add_argument("--cpu", action="store_true", help="Nur CPU laufen lassen")
-    ap.add_argument("--gpu", action="store_true", help="Auch GPU laufen lassen")
-    ap.add_argument("--viz", action="store_true", help="Visualisierung während eines Laufs (nur Seed=start-seed)")
-    ap.add_argument("--out", type=str, default="bench_out", help="Ausgabeordner")
-    args = ap.parse_args()
-
-    objective: ObjectiveName = args.objective  # type: ignore[assignment]
-    outdir = Path(args.out)
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    run_cpu = args.cpu or (not args.gpu)  # standard: CPU, außer man wählt nur GPU
-    run_gpu = args.gpu
-
-    rows_cpu: list[BenchResult] = []
-    rows_gpu: list[BenchResult] = []
-
-    for i in range(args.seeds):
-        seed = args.start_seed + i
-        do_viz = args.viz and (i == 0)
-
-        if run_cpu:
-            r = run_one(objective, seed=seed, use_gpu=False, visualize=do_viz)
-            rows_cpu.append(r)
-            print(f"[bench] CPU seed={seed} done: best={r.best_val:.6g} in {r.elapsed_s:.3f}s (iters={r.iters_used})")
-
-        if run_gpu:
-            r = run_one(objective, seed=seed, use_gpu=True, visualize=do_viz)
-            rows_gpu.append(r)
-            print(f"[bench] GPU seed={seed} done: best={r.best_val:.6g} in {r.elapsed_s:.3f}s (iters={r.iters_used})")
-
-    # CSV pro Objective/Plattform
-    if rows_cpu:
-        write_csv(outdir / f"hpio_{objective}_cpu.csv", rows_cpu)
-    if rows_gpu:
-        write_csv(outdir / f"hpio_{objective}_gpu.csv", rows_gpu)
-
-    # kompakte Plot-Zusammenfassung
-    try_plot(objective, rows_cpu, rows_gpu, outdir=outdir)
-
-    # Konsolen-Kurzbericht
-    summary_print(rows_cpu, rows_gpu, objective)
-
-if __name__ == "__main__":
-    main()
+__all__ = [
+    "AgentState",
+    "Field",
+    "FieldParams",
+    "AgentParams",
+    "HPIOConfig",
+    "HPIO",
+    "build_config",
+]
