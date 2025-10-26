@@ -326,6 +326,8 @@ def main():
     ap.add_argument("--report-every", type=int, default=None, help="Alle n Iterationen loggen (überschreibt cfg.report_every)")
     ap.add_argument("--overlay", action="store_true", help="Zeige Iteration & Bestwert live im Plot")
     ap.add_argument("--ackley-tight", action="store_true", help="Aggressives Tuning für Ackley (GPU empfohlen)")
+    ap.add_argument("--ackley-pro", action="store_true", help="Aggressives, bewährtes Ackley-Profil (GPU empfohlen)")
+    ap.add_argument("--cpu-pro", action="store_true", help="Bewährtes CPU-Profil für alle Objectives")
     args = ap.parse_args()
 
     out_path = Path(args.video)
@@ -342,6 +344,37 @@ def main():
         cfg.report_every = max(1, args.report_every)
     else:
         cfg.report_every = max(10, cfg.report_every)  # wie bisher
+
+    # Härteres Early-Stopping & präziser Polish (robuster, zieht zum Ende)
+    cfg.early_patience = 60           # vorher evtl. 90
+    cfg.early_tol = 1e-8              # vorher evtl. 1e-4
+    cfg.polish_h = 1e-3
+
+    # CPU-Profil (generell gut, falls GPU aus ist)
+    if args.cpu_pro and not args.gpu:
+        cfg.agent.momentum = 0.72
+        cfg.agent.step = max(0.016, cfg.agent.step)
+        cfg.field.relax_alpha = min(0.36, cfg.field.relax_alpha)
+        cfg.field.kernel_sigma = 1.6
+        cfg.anneal_curiosity_to = 0.16
+        cfg.w_intensity = 1.0
+        cfg.w_phase = 0.60
+        cfg.phase_span_pi = 2.2
+        cfg.iters = max(cfg.iters, 340)
+
+    # Ackley-Profil (GPU empfohlen) – Werte, die bei dir vorher gut liefen
+    if args.ackley_pro and args.objective == "ackley":
+        cfg.field.relax_alpha = 0.30
+        cfg.field.kernel_sigma = 1.6
+        cfg.agent.deposit_sigma = 1.5
+        cfg.agent.momentum = 0.72
+        cfg.agent.step = 0.018
+        cfg.agent.coherence_gain = 0.46
+        cfg.anneal_curiosity_to = 0.14
+        cfg.w_intensity = 1.0
+        cfg.w_phase = 0.55
+        cfg.phase_span_pi = 2.4
+        cfg.iters = max(cfg.iters, 400)
 
     # Aggressives Ackley-Tuning (deine früheren „guten“ Werte)
     if args.ackley_tight and args.objective == "ackley":
