@@ -2,9 +2,6 @@
   <img width="1408" height="768" alt="Herunterladen" src="https://github.com/user-attachments/assets/917dc33a-243b-4fb2-90fa-0d1355d74346" />
 </p>
 
-<p align="center">
-  <img width="1408" height="768" alt="Herunterladen" src="https://github.com/user-attachments/assets/917dc33a-243b-4fb2-90fa-0d1355d74346" />
-</p>
 
 # 🧠 HPIO Optimization Suite  
 **Hybrid Phase Interaction Optimization (HPIO)** – eine architektonische Odyssee zwischen algorithmischer Präzision und visueller Intelligenz.
