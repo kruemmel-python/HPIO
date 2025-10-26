@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import math
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from itertools import product
@@ -1201,7 +1202,6 @@ def build_video_from_frames(
 
     fmt = fmt.lower()
     ext = fmt if fmt in {"mp4", "mkv", "avi"} else "mp4"
-    output = _io.BytesIO()
     output_params: list[str] = []
     if encoder:
         output_params.extend(["-preset", str(encoder)])
@@ -1210,21 +1210,25 @@ def build_video_from_frames(
     if ext == "mp4":
         output_params.extend(["-movflags", "faststart"])
 
-    writer = imageio.get_writer(
-        output,
-        format="ffmpeg",
-        fps=int(fps),
-        codec="libx264",
-        quality=None,
-        macro_block_size=None,
-        pixelformat="yuv420p",
-        output_params=output_params,
-    )
-    with writer:
-        for img in imgs:
-            writer.append_data(img)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir) / f"capture.{ext}"
+        writer = imageio.get_writer(
+            str(tmp_path),
+            format="ffmpeg",
+            fps=int(fps),
+            codec="libx264",
+            quality=None,
+            macro_block_size=None,
+            pixelformat="yuv420p",
+            output_params=output_params,
+        )
+        with writer:
+            for img in imgs:
+                writer.append_data(img)
 
-    return ext, output.getvalue()
+        payload = tmp_path.read_bytes()
+
+    return ext, payload
 
 
 def resolve_video_path(raw_filename: str, fmt: str) -> Path:
