@@ -6,12 +6,15 @@ Die Drohnen folgen Gradienten, deponieren Spuren und koordinieren sich schwarmar
 """
 
 from __future__ import annotations
+import io
 import time
 import numpy as np
 import streamlit as st
 from dataclasses import dataclass, field
 from typing import Any
+from numpy.random import Generator
 import matplotlib.pyplot as plt
+import imageio
 
 try:
     from streamlit_app import AppState
@@ -38,10 +41,34 @@ def bilinear_sample(arr: np.ndarray, x: float, y: float) -> float:
     return float(top * (1 - fy) + bot * fy)
 
 
+def bilinear_sample_vec(arr: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    """Bilineare Interpolation für Vektor-Eingaben (xs, ys)."""
+    h, w = arr.shape
+    xs = np.clip(xs, 0.0, w - 1.0)
+    ys = np.clip(ys, 0.0, h - 1.0)
+
+    x0 = np.floor(xs).astype(int)
+    y0 = np.floor(ys).astype(int)
+    x1 = np.clip(x0 + 1, 0, w - 1)
+    y1 = np.clip(y0 + 1, 0, h - 1)
+
+    fx = xs - x0
+    fy = ys - y0
+
+    Ia = arr[y0, x0]
+    Ib = arr[y0, x1]
+    Ic = arr[y1, x0]
+    Id = arr[y1, x1]
+
+    top = Ia * (1.0 - fx) + Ib * fx
+    bot = Ic * (1.0 - fx) + Id * fx
+    return (top * (1.0 - fy) + bot * fy).astype(np.float32)
+
+
 def box_blur(field: np.ndarray) -> np.ndarray:
-    """Kleiner 3x3 Box-Blur als Relaxation (ohne externe Abhängigkeiten)."""
+    """3x3 Box-Blur ohne Randplateaus (nutzt reflektierendes Padding)."""
     h, w = field.shape
-    p = np.pad(field, 1, mode="edge")
+    p = np.pad(field, 1, mode="reflect")
     acc = (
         p[0:h,   0:w] + p[0:h,   1:w+1] + p[0:h,   2:w+2] +
         p[1:h+1, 0:w] + p[1:h+1, 1:w+1] + p[1:h+1, 2:w+2] +
@@ -70,118 +97,139 @@ class SwarmController:
     momentum: float = 0.6
     deposit_sigma: float = 1.5
     coherence_gain: float = 0.15
-    curiosity: float = 0.35
+    curiosity: float = 0.2
     avoidance_radius: float = 6.0
     evap: float = 0.02
     relax_alpha: float = 0.22
     iteration: int = 0
     drones: list[Drone] = field(default_factory=list)
+    rng: Generator = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        h, w = self.field.shape  # KORREKT: (height, width)
-        rng = np.random.default_rng(1234)
-        self.drones = [
-            Drone(
-                pos=np.array([rng.uniform(0, w - 1), rng.uniform(0, h - 1)], dtype=np.float32),
-                vel=rng.normal(0, 0.1, size=2).astype(np.float32),
+        h, w = self.field.shape  # (height, width)
+        self.rng = np.random.default_rng(1234)
+        self.drones = []
+        for _ in range(self.num_drones):
+            x = self.rng.uniform(0.0, max(w - 1.0, 1.0))
+            y = self.rng.uniform(0.0, max(h - 1.0, 1.0))
+            theta = self.rng.uniform(0.0, 2.0 * np.pi)
+            v0 = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32) * 0.1
+            self.drones.append(
+                Drone(
+                    pos=np.array([x, y], dtype=np.float32),
+                    vel=v0,
+                )
             )
-            for _ in range(self.num_drones)
-        ]
 
-    def _deposit(self, x: int, y: int) -> None:
-        """Drohne legt Gaußspur ab."""
+    def _deposit(self, cx: float, cy: float) -> None:
+        """Drohne legt Gaußspur mit gleitendem Zentrum ab."""
+        if self.deposit_sigma <= 0:
+            return
         h, w = self.field.shape
-        rad = max(1, int(3 * self.deposit_sigma))
-        x0, x1 = max(0, x - rad), min(w, x + rad + 1)
-        y0, y1 = max(0, y - rad), min(h, y + rad + 1)
+        sigma = float(self.deposit_sigma)
+        rad = max(1, int(3.0 * sigma))
+        x_floor = int(np.floor(cx))
+        y_floor = int(np.floor(cy))
+        x0 = max(0, x_floor - rad)
+        x1 = min(w, x_floor + rad + 1)
+        y0 = max(0, y_floor - rad)
+        y1 = min(h, y_floor + rad + 1)
         if x0 >= x1 or y0 >= y1:
             return
-        xs = np.arange(x0, x1)
-        ys = np.arange(y0, y1)
+        xs = np.arange(x0, x1, dtype=np.float32)
+        ys = np.arange(y0, y1, dtype=np.float32)
         X, Y = np.meshgrid(xs, ys)
-        g = np.exp(-((X - x) ** 2 + (Y - y) ** 2) / (2 * self.deposit_sigma ** 2)).astype(np.float32)
-        self.field[y0:y1, x0:x1] += g
+        patch = np.exp(-((X - cx) ** 2 + (Y - cy) ** 2) / (2.0 * sigma ** 2)).astype(np.float32)
+        self.field[y0:y1, x0:x1] += patch
 
     def step_swarm(self) -> None:
         """Ein Simulationsschritt für den gesamten Schwarm."""
         if not self.drones:
             return
 
-        # Feldgradient
-        gy, gx = np.gradient(self.field.astype(np.float32))  # gy=d/dy, gx=d/dx
         h, w = self.field.shape
+        field32 = self.field.astype(np.float32, copy=False)
+        gy, gx = np.gradient(field32, edge_order=1)
 
-        # Globaler Schwerpunkt (für leichte Kohärenz)
-        mean_pos = np.mean([d.pos for d in self.drones], axis=0)
+        active_idx = [i for i, d in enumerate(self.drones) if d.active]
+        if not active_idx:
+            return
 
-        for i, d in enumerate(self.drones):
-            if not d.active:
-                continue
+        pos = np.vstack([self.drones[i].pos for i in active_idx]).astype(np.float32)
+        vel = np.vstack([self.drones[i].vel for i in active_idx]).astype(np.float32)
 
-            # Bilinear gesampelter Gradient
-            gx_val = bilinear_sample(gx, d.pos[0], d.pos[1])
-            gy_val = bilinear_sample(gy, d.pos[0], d.pos[1])
-            grad = np.array([gx_val, gy_val], dtype=np.float32)
-            gn = np.linalg.norm(grad) + 1e-8
-            grad_dir = grad / gn
+        xs = pos[:, 0]
+        ys = pos[:, 1]
+        gx_s = bilinear_sample_vec(gx, xs, ys)
+        gy_s = bilinear_sample_vec(gy, xs, ys)
+        grad = np.stack([gx_s, gy_s], axis=1)
+        grad_norm = np.linalg.norm(grad, axis=1, keepdims=True) + 1e-8
+        grad_dir = grad / grad_norm
 
-            # Neugier + Kohärenz
-            noise = np.random.normal(0.0, 1.0, size=2).astype(np.float32)
-            noise /= (np.linalg.norm(noise) + 1e-8)
+        noise = self.rng.normal(0.0, 1.0, size=grad.shape).astype(np.float32)
+        noise_norm = np.linalg.norm(noise, axis=1, keepdims=True) + 1e-8
+        curiosity_dir = noise / noise_norm
 
-            coh_vec = (mean_pos - d.pos).astype(np.float32)
-            coh_vec /= (np.linalg.norm(coh_vec) + 1e-8)
+        mean_pos = pos.mean(axis=0, keepdims=True)
+        coh_vec = mean_pos - pos
+        coh_norm = np.linalg.norm(coh_vec, axis=1, keepdims=True) + 1e-8
+        cohesion_dir = coh_vec / coh_norm
 
-            # Einfache Kollisionsvermeidung (weiche Abstoßung)
-            avoid = np.zeros(2, dtype=np.float32)
-            if self.avoidance_radius > 0:
-                for j, o in enumerate(self.drones):
-                    if i == j:
-                        continue
-                    diff = d.pos - o.pos
-                    dist = float(np.linalg.norm(diff) + 1e-8)
-                    if 0 < dist < self.avoidance_radius:
-                        avoid += (diff / dist)
+        avoidance = np.zeros_like(pos, dtype=np.float32)
+        if self.avoidance_radius > 0 and pos.shape[0] > 1:
+            diff = pos[:, None, :] - pos[None, :, :]
+            dist = np.linalg.norm(diff, axis=2) + 1e-8
+            mask = (dist < self.avoidance_radius) & (~np.eye(pos.shape[0], dtype=bool))
+            if np.any(mask):
+                avoidance = ((diff / dist[..., None]) * mask[..., None]).sum(axis=1).astype(np.float32)
 
-            # Antriebsvektor (Gewichte gern im UI tunen)
-            drive = (
-                0.65 * grad_dir +
-                self.curiosity * 0.35 * noise +
-                self.coherence_gain * coh_vec +
-                0.4 * avoid
-            )
+        w_grad = 0.65
+        w_cur = float(self.curiosity)
+        w_coh = float(self.coherence_gain)
+        w_avoid = 0.40
 
-            # Velocity-Update (Trägheit) + Schritt
-            d.vel = self.momentum * d.vel + (1.0 - self.momentum) * drive
-            # sanfte Kappung
-            sp = np.linalg.norm(d.vel) + 1e-8
-            max_sp = max(0.5, 3.0 * self.step)
-            if sp > max_sp:
-                d.vel *= (max_sp / sp)
+        drive = (
+            w_grad * grad_dir
+            + w_cur * curiosity_dir
+            + w_coh * cohesion_dir
+            + w_avoid * avoidance
+        ).astype(np.float32)
 
-            d.pos += self.step * d.vel
+        vel = (self.momentum * vel + self.step * drive).astype(np.float32)
+        speed = np.linalg.norm(vel, axis=1, keepdims=True) + 1e-8
+        max_sp = max(0.5, 3.0 * self.step)
+        vel = vel * np.minimum(1.0, max_sp / speed)
 
-            # Ränder reflektierend
-            if d.pos[0] < 0:
-                d.pos[0] = -d.pos[0]; d.vel[0] = abs(d.vel[0])
-            elif d.pos[0] > w - 1:
-                d.pos[0] = 2 * (w - 1) - d.pos[0]; d.vel[0] = -abs(d.vel[0])
+        pos = pos + vel
 
-            if d.pos[1] < 0:
-                d.pos[1] = -d.pos[1]; d.vel[1] = abs(d.vel[1])
-            elif d.pos[1] > h - 1:
-                d.pos[1] = 2 * (h - 1) - d.pos[1]; d.vel[1] = -abs(d.vel[1])
+        for i in range(pos.shape[0]):
+            if pos[i, 0] < 0:
+                pos[i, 0] = -pos[i, 0]
+                vel[i, 0] = abs(vel[i, 0])
+            elif pos[i, 0] > w - 1:
+                pos[i, 0] = 2 * (w - 1) - pos[i, 0]
+                vel[i, 0] = -abs(vel[i, 0])
 
-            # Batterie & Ablage
+            if pos[i, 1] < 0:
+                pos[i, 1] = -pos[i, 1]
+                vel[i, 1] = abs(vel[i, 1])
+            elif pos[i, 1] > h - 1:
+                pos[i, 1] = 2 * (h - 1) - pos[i, 1]
+                vel[i, 1] = -abs(vel[i, 1])
+
+        for arr_idx, drone_idx in enumerate(active_idx):
+            d = self.drones[drone_idx]
+            d.pos[:] = pos[arr_idx]
+            d.vel[:] = vel[arr_idx]
             d.battery -= 0.001
             if d.battery <= 0:
                 d.active = False
-            else:
-                self._deposit(int(d.pos[0]), int(d.pos[1]))
+                continue
+            self._deposit(float(d.pos[0]), float(d.pos[1]))
 
         # Feld-Update: Verdunstung + Relaxation
         if self.evap > 0:
-            self.field *= (1.0 - float(self.evap))
+            self.field *= max(0.0, 1.0 - float(self.evap))
         if self.relax_alpha > 0:
             blurred = box_blur(self.field)
             a = float(self.relax_alpha)
@@ -215,7 +263,7 @@ def page_dronesim(state: AppState) -> None:
         momentum = st.slider("Trägheit", 0.0, 0.99, 0.6, 0.01)
         deposit_sigma = st.slider("Ablage-Sigma", 0.5, 4.0, 1.5, 0.1)
         coherence_gain = st.slider("Kohärenz-Gain", 0.0, 1.0, 0.15, 0.01)
-        curiosity = st.slider("Neugier", 0.0, 1.0, 0.35, 0.01)
+        curiosity = st.slider("Neugier", 0.0, 1.0, 0.20, 0.01)
         avoidance_radius = st.slider("Vermeidungsradius", 0.0, 20.0, 6.0, 0.5)
         evap = st.slider("Verdunstung Φ", 0.0, 0.2, 0.02, 0.01)
         relax_alpha = st.slider("Relaxation Φ", 0.0, 1.0, 0.22, 0.01)
@@ -228,6 +276,8 @@ def page_dronesim(state: AppState) -> None:
 
         st.markdown("### Steuerung")
         start_btn = st.button("Start Simulation")
+        record_run = st.checkbox("Simulation aufzeichnen (GIF)", value=False)
+        record_fps = st.slider("GIF-Bildrate", 2, 30, 15, 1)
 
     # --- (Re)Init des Schwarms ----------------------------------------------
     need_init = False
@@ -273,6 +323,7 @@ def page_dronesim(state: AppState) -> None:
     progress = st.progress(0.0)
     placeholder = st.empty()
 
+    frames: list[np.ndarray] = []
     for i in range(int(run_steps)):
         # Optional: aktuelles HPIO-Φ einkoppeln (blenden), wenn vorhanden
         if live_coupling and "phi_snapshot" in st.session_state:
@@ -290,7 +341,7 @@ def page_dronesim(state: AppState) -> None:
         drones_xy = np.array([d.pos for d in swarm.drones if d.active])
 
         fig, ax = plt.subplots(figsize=(5.6, 5.6))
-        ax.imshow(img, cmap="plasma", origin="lower")
+        ax.imshow(img, cmap="plasma", origin="upper")
         if len(drones_xy):
             ax.scatter(
                 drones_xy[:, 0], drones_xy[:, 1],
@@ -299,6 +350,12 @@ def page_dronesim(state: AppState) -> None:
             )
         ax.set_title(f"Iteration {swarm.iteration}", fontsize=12)
         ax.axis("off")
+        fig.canvas.draw()
+        if record_run:
+            width, height = fig.canvas.get_width_height()
+            frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            frame = frame.reshape((height, width, 3))
+            frames.append(frame)
         placeholder.pyplot(fig)
         plt.close(fig)
 
@@ -306,3 +363,14 @@ def page_dronesim(state: AppState) -> None:
 
     st.success("Simulation abgeschlossen ✅")
 
+    if record_run and frames:
+        buffer = io.BytesIO()
+        frame_duration = 1.0 / max(1, int(record_fps))
+        imageio.mimsave(buffer, frames, format="gif", duration=frame_duration)
+        buffer.seek(0)
+        st.download_button(
+            "GIF herunterladen",
+            buffer,
+            file_name=f"dronesim_{int(time.time())}.gif",
+            mime="image/gif",
+        )
