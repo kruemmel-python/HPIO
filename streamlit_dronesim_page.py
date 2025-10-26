@@ -11,6 +11,7 @@ import numpy as np
 import streamlit as st
 from dataclasses import dataclass, field
 from typing import Any
+from numpy.random import Generator
 import matplotlib.pyplot as plt
 
 try:
@@ -94,37 +95,50 @@ class SwarmController:
     momentum: float = 0.6
     deposit_sigma: float = 1.5
     coherence_gain: float = 0.15
-    curiosity: float = 0.35
+    curiosity: float = 0.2
     avoidance_radius: float = 6.0
     evap: float = 0.02
     relax_alpha: float = 0.22
     iteration: int = 0
     drones: list[Drone] = field(default_factory=list)
+    rng: Generator = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         h, w = self.field.shape  # (height, width)
-        rng = np.random.default_rng(1234)
-        self.drones = [
-            Drone(
-                pos=np.array([rng.uniform(0, w), rng.uniform(0, h)], dtype=np.float32),
-                vel=np.zeros(2, dtype=np.float32),
+        self.rng = np.random.default_rng(1234)
+        self.drones = []
+        for _ in range(self.num_drones):
+            x = self.rng.uniform(0.0, max(w - 1.0, 1.0))
+            y = self.rng.uniform(0.0, max(h - 1.0, 1.0))
+            theta = self.rng.uniform(0.0, 2.0 * np.pi)
+            v0 = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32) * 0.1
+            self.drones.append(
+                Drone(
+                    pos=np.array([x, y], dtype=np.float32),
+                    vel=v0,
+                )
             )
-            for _ in range(self.num_drones)
-        ]
 
-    def _deposit(self, x: int, y: int) -> None:
-        """Drohne legt Gaußspur ab."""
+    def _deposit(self, cx: float, cy: float) -> None:
+        """Drohne legt Gaußspur mit gleitendem Zentrum ab."""
+        if self.deposit_sigma <= 0:
+            return
         h, w = self.field.shape
-        rad = max(1, int(3 * self.deposit_sigma))
-        x0, x1 = max(0, x - rad), min(w, x + rad + 1)
-        y0, y1 = max(0, y - rad), min(h, y + rad + 1)
+        sigma = float(self.deposit_sigma)
+        rad = max(1, int(3.0 * sigma))
+        x_floor = int(np.floor(cx))
+        y_floor = int(np.floor(cy))
+        x0 = max(0, x_floor - rad)
+        x1 = min(w, x_floor + rad + 1)
+        y0 = max(0, y_floor - rad)
+        y1 = min(h, y_floor + rad + 1)
         if x0 >= x1 or y0 >= y1:
             return
-        xs = np.arange(x0, x1)
-        ys = np.arange(y0, y1)
+        xs = np.arange(x0, x1, dtype=np.float32)
+        ys = np.arange(y0, y1, dtype=np.float32)
         X, Y = np.meshgrid(xs, ys)
-        g = np.exp(-((X - x) ** 2 + (Y - y) ** 2) / (2 * self.deposit_sigma ** 2)).astype(np.float32)
-        self.field[y0:y1, x0:x1] += g
+        patch = np.exp(-((X - cx) ** 2 + (Y - cy) ** 2) / (2.0 * sigma ** 2)).astype(np.float32)
+        self.field[y0:y1, x0:x1] += patch
 
     def step_swarm(self) -> None:
         """Ein Simulationsschritt für den gesamten Schwarm."""
@@ -135,9 +149,6 @@ class SwarmController:
         field32 = self.field.astype(np.float32, copy=False)
         gy, gx = np.gradient(field32, edge_order=1)
 
-        gx_bias = float(gx.mean())
-        gy_bias = float(gy.mean())
-
         active_idx = [i for i, d in enumerate(self.drones) if d.active]
         if not active_idx:
             return
@@ -147,58 +158,47 @@ class SwarmController:
 
         xs = pos[:, 0]
         ys = pos[:, 1]
-        gx_s = bilinear_sample_vec(gx, xs, ys) - gx_bias
-        gy_s = bilinear_sample_vec(gy, xs, ys) - gy_bias
+        gx_s = bilinear_sample_vec(gx, xs, ys)
+        gy_s = bilinear_sample_vec(gy, xs, ys)
         grad = np.stack([gx_s, gy_s], axis=1)
         grad_norm = np.linalg.norm(grad, axis=1, keepdims=True) + 1e-8
         grad_dir = grad / grad_norm
 
-        noise = np.random.normal(0.0, 1.0, size=grad.shape).astype(np.float32)
+        noise = self.rng.normal(0.0, 1.0, size=grad.shape).astype(np.float32)
         noise_norm = np.linalg.norm(noise, axis=1, keepdims=True) + 1e-8
-        noise_dir = noise / noise_norm
+        curiosity_dir = noise / noise_norm
 
         mean_pos = pos.mean(axis=0, keepdims=True)
         coh_vec = mean_pos - pos
         coh_norm = np.linalg.norm(coh_vec, axis=1, keepdims=True) + 1e-8
-        coh_dir = coh_vec / coh_norm
+        cohesion_dir = coh_vec / coh_norm
 
-        avoidance = np.zeros_like(pos)
+        avoidance = np.zeros_like(pos, dtype=np.float32)
         if self.avoidance_radius > 0 and pos.shape[0] > 1:
             diff = pos[:, None, :] - pos[None, :, :]
             dist = np.linalg.norm(diff, axis=2) + 1e-8
             mask = (dist < self.avoidance_radius) & (~np.eye(pos.shape[0], dtype=bool))
             if np.any(mask):
-                weight = np.clip(1.0 - dist / self.avoidance_radius, 0.0, None)
-                dir_vec = diff / dist[..., None]
-                avoidance = (weight[..., None] * dir_vec * mask[..., None]).sum(axis=1).astype(np.float32)
+                avoidance = ((diff / dist[..., None]) * mask[..., None]).sum(axis=1).astype(np.float32)
 
-        edge_r = 8.0
-        k_edge = 0.018
-        repel = np.zeros_like(pos)
-        if edge_r > 0:
-            left = pos[:, 0] < edge_r
-            repel[left, 0] += (edge_r - pos[left, 0]) / edge_r
-            right = pos[:, 0] > (w - 1 - edge_r)
-            repel[right, 0] -= (pos[right, 0] - (w - 1 - edge_r)) / edge_r
-            top = pos[:, 1] < edge_r
-            repel[top, 1] += (edge_r - pos[top, 1]) / edge_r
-            bottom = pos[:, 1] > (h - 1 - edge_r)
-            repel[bottom, 1] -= (pos[bottom, 1] - (h - 1 - edge_r)) / edge_r
+        w_grad = 0.65
+        w_cur = float(self.curiosity)
+        w_coh = float(self.coherence_gain)
+        w_avoid = 0.40
 
         drive = (
-            0.65 * grad_dir
-            + (0.35 * float(self.curiosity)) * noise_dir
-            + self.coherence_gain * coh_dir
-            + 0.4 * avoidance
-            + k_edge * repel
+            w_grad * grad_dir
+            + w_cur * curiosity_dir
+            + w_coh * cohesion_dir
+            + w_avoid * avoidance
         ).astype(np.float32)
 
         vel = (self.momentum * vel + self.step * drive).astype(np.float32)
         speed = np.linalg.norm(vel, axis=1, keepdims=True) + 1e-8
-        max_sp = max(0.4, 1.5 * self.step)
+        max_sp = max(0.5, 3.0 * self.step)
         vel = vel * np.minimum(1.0, max_sp / speed)
 
-        pos += vel
+        pos = pos + vel
 
         for i in range(pos.shape[0]):
             if pos[i, 0] < 0:
@@ -223,18 +223,15 @@ class SwarmController:
             if d.battery <= 0:
                 d.active = False
                 continue
-            self._deposit(int(d.pos[0]), int(d.pos[1]))
+            self._deposit(float(d.pos[0]), float(d.pos[1]))
 
         # Feld-Update: Verdunstung + Relaxation
         if self.evap > 0:
-            self.field *= (1.0 - float(self.evap))
+            self.field *= max(0.0, 1.0 - float(self.evap))
         if self.relax_alpha > 0:
             blurred = box_blur(self.field)
             a = float(self.relax_alpha)
             self.field = (1.0 - a) * self.field + a * blurred
-
-        # globalen DC-Bias entfernen
-        self.field -= float(self.field.mean())
 
         self.iteration += 1
 
@@ -264,7 +261,7 @@ def page_dronesim(state: AppState) -> None:
         momentum = st.slider("Trägheit", 0.0, 0.99, 0.6, 0.01)
         deposit_sigma = st.slider("Ablage-Sigma", 0.5, 4.0, 1.5, 0.1)
         coherence_gain = st.slider("Kohärenz-Gain", 0.0, 1.0, 0.15, 0.01)
-        curiosity = st.slider("Neugier", 0.0, 1.0, 0.35, 0.01)
+        curiosity = st.slider("Neugier", 0.0, 1.0, 0.20, 0.01)
         avoidance_radius = st.slider("Vermeidungsradius", 0.0, 20.0, 6.0, 0.5)
         evap = st.slider("Verdunstung Φ", 0.0, 0.2, 0.02, 0.01)
         relax_alpha = st.slider("Relaxation Φ", 0.0, 1.0, 0.22, 0.01)
