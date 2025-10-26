@@ -26,6 +26,10 @@ class AgentParams:
     step: float = 0.35
     curiosity: float = 0.45
     momentum: float = 0.65
+    # NEU: Breite der Feldablage (Standard so gewählt, dass altes Verhalten nahekommt)
+    deposit_sigma: float = 1.6    # in Grid-Pixeln (σ). 0 => Punktablage
+    # NEU: Kohärenz in Richtung global best (0..~1). 0 = aus.
+    coherence_gain: float = 0.0
 
 
 @dataclass
@@ -44,6 +48,11 @@ class HPIOConfig:
     early_patience: int = 90
     early_tol: float = 1e-4
     polish_h: float = 1e-3
+    # NEU: Gewichte für Intensitäts-/Phasenanteil der Ablage
+    w_intensity: float = 1.0
+    w_phase: float = 0.0
+    # NEU: Phasen-Spannweite in Einheiten von π (z. B. 2.4 → 2.4π)
+    phase_span_pi: float = 2.0
     field: FieldParams = dc.field(default_factory=FieldParams)
     agent: AgentParams = dc.field(default_factory=AgentParams)
 
@@ -89,7 +98,7 @@ def _gaussian_kernel_1d(sigma: float) -> np.ndarray:
         size += 1
     radius = size // 2
     xs = np.arange(-radius, radius + 1, dtype=np.float64)
-    kernel = np.exp(-(xs**2) / (2.0 * sigma**2))
+    kernel = np.exp(-(xs**2) / (2.0 * max(1e-9, sigma)**2))
     kernel /= np.sum(kernel)
     return kernel
 
@@ -104,6 +113,30 @@ def _apply_conv1d(arr: np.ndarray, kernel: np.ndarray, axis: int) -> np.ndarray:
         return np.convolve(line, kernel, mode="valid")
 
     return np.apply_along_axis(_conv_line, axis, padded)
+
+
+def _stamp_gaussian(grid: np.ndarray, cx: int, cy: int, sigma: float, amount: float) -> None:
+    """
+    2D-Gaussian um (cx,cy) addieren. sigma in Pixeln. Summe der Maske wird auf 'amount' normiert.
+    """
+    if sigma <= 0.0:
+        # Punktablage (legacy)
+        if 0 <= cy < grid.shape[0] and 0 <= cx < grid.shape[1]:
+            grid[cy, cx] += amount
+        return
+
+    rad = max(1, int(round(3 * sigma)))
+    y0, y1 = max(0, cy - rad), min(grid.shape[0], cy + rad + 1)
+    x0, x1 = max(0, cx - rad), min(grid.shape[1], cx + rad + 1)
+    if y0 >= y1 or x0 >= x1:
+        return
+
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    g = np.exp(-(((xx - cx) ** 2) + ((yy - cy) ** 2)) / (2.0 * sigma ** 2))
+    s = g.sum()
+    if s > 0:
+        g *= (amount / s)
+        grid[y0:y1, x0:x1] += g
 
 
 # ---------------------------------------------------------------------------
@@ -151,11 +184,17 @@ class Field:
     def _grid_y(self, y: float) -> int:
         return int(round(self._grid_yf(y)))
 
-    def deposit(self, pos: np.ndarray, amount: float) -> None:
+    def deposit(self, pos: np.ndarray, amount: float, sigma_px: float = 0.0) -> None:
+        """
+        Ablage im Feld. Wenn sigma_px>0 → 2D-Gauss, sonst Punktablage.
+        """
         gx, gy = self.world_to_grid(pos)
         gy = int(np.clip(gy, 0, self.phi.shape[0] - 1))
         gx = int(np.clip(gx, 0, self.phi.shape[1] - 1))
-        self.phi[gy, gx] += amount
+        if sigma_px > 0.0:
+            _stamp_gaussian(self.phi, gx, gy, sigma=float(sigma_px), amount=float(amount))
+        else:
+            self.phi[gy, gx] += amount
 
     def sample_gradient(self, pos: np.ndarray) -> np.ndarray:
         gx, gy = self.world_to_grid_float(pos)
@@ -220,13 +259,40 @@ class HPIO:
         return pos
 
     def _deposit_from_agent(self, agent: AgentState, amplitude: float) -> None:
-        amount = amplitude * (1.0 / (1.0 + agent.best_val))
-        self.field.deposit(agent.best_pos, amount)
+        """
+        Ablage kombiniert Intensitäts- und (optional) Phasenanteil.
+        - Intensität:  1/(1+best_val) → bessere Agenten legen stärker ab.
+        - Phase: leichte Modulation anhand Bewegungsrichtung (sinusförmig),
+                 skaliert über phase_span_pi und w_phase.
+        """
+        # Intensitätsanteil
+        base = amplitude * (1.0 / (1.0 + agent.best_val))
+
+        # Phasenanteil (richtungsabhängig – optional)
+        phase_term = 0.0
+        if self.cfg.w_phase != 0.0:
+            v = agent.vel
+            vn = np.linalg.norm(v)
+            if vn > 1e-12:
+                # Winkel ∈ (-π, π]
+                ang = float(np.arctan2(v[1], v[0]))
+                # Map auf [-phase_span_pi*π, +phase_span_pi*π] durch Skalierung
+                span = float(self.cfg.phase_span_pi) * np.pi
+                phase_term = np.sin(ang * (span / np.pi))  # = sin(ang * phase_span_pi)
+            # Leicht dämpfen, damit Phase nicht dominiert
+            phase_term *= 0.5 * base
+
+        amount = self.cfg.w_intensity * base + self.cfg.w_phase * phase_term
+
+        # Ablage-Fußabdruck
+        sigma_px = max(0.0, float(self.cfg.agent.deposit_sigma))
+        self.field.deposit(agent.best_pos, float(amount), sigma_px=sigma_px)
 
     def _move_agent(self, agent: AgentState, *, step_scale: float, curiosity_scale: float) -> None:
         grad = self.field.sample_gradient(agent.pos)
-        if np.linalg.norm(grad) > 1e-9:
-            grad = grad / (np.linalg.norm(grad) + 1e-9)
+        gnorm = np.linalg.norm(grad)
+        if gnorm > 1e-9:
+            grad = grad / gnorm
         random_vec = self.rng.normal(size=2)
         random_vec /= np.linalg.norm(random_vec) + 1e-9
 
@@ -234,7 +300,22 @@ class HPIO:
         curiosity = self.cfg.agent.curiosity * curiosity_scale
         momentum = self.cfg.agent.momentum
 
-        direction = -grad * target_step + curiosity * random_vec
+        # NEU: Kohärenz in Richtung global best (hilft „Einrasten“)
+        coh = 0.0
+        if self.cfg.agent.coherence_gain > 0.0:
+            to_gbest = self.gbest_pos - agent.pos
+            ng = np.linalg.norm(to_gbest)
+            if ng > 1e-12:
+                coh_vec = to_gbest / ng
+                coh = self.cfg.agent.coherence_gain
+            else:
+                coh_vec = np.zeros(2, dtype=np.float64)
+                coh = 0.0
+        else:
+            coh_vec = np.zeros(2, dtype=np.float64)
+
+        # Bewegungsrichtung: runter gegen Gradienten, plus Neugier, plus Kohärenz
+        direction = -grad * target_step + curiosity * random_vec + coh * target_step * coh_vec
         agent.vel = momentum * agent.vel + (1.0 - momentum) * direction
         agent.pos = self._clip_position(agent.pos + agent.vel)
 
@@ -344,6 +425,11 @@ def build_config(objective: ObjectiveName, *, use_gpu: bool = False, visualize: 
         cfg.anneal_step_to = 0.18
         cfg.anneal_curiosity_from = 0.9
         cfg.anneal_curiosity_to = 0.2
+        # etwas Phasenführung hilft gegen 1.0-Ring
+        cfg.w_intensity = 1.0
+        cfg.w_phase = 0.0
+        cfg.phase_span_pi = 2.2
+
     elif objective == "ackley":
         cfg.bounds = ((-5.0, 5.0), (-5.0, 5.0))
         cfg.iters = 380
@@ -353,6 +439,11 @@ def build_config(objective: ObjectiveName, *, use_gpu: bool = False, visualize: 
         cfg.anneal_step_to = 0.22
         cfg.anneal_curiosity_from = 1.0
         cfg.anneal_curiosity_to = 0.3
+        # Ackley profitiert von etwas Phase, kann aber bei 0.0 starten
+        cfg.w_intensity = 1.0
+        cfg.w_phase = 0.0
+        cfg.phase_span_pi = 2.4
+
     elif objective == "himmelblau":
         cfg.bounds = ((-6.0, 6.0), (-6.0, 6.0))
         cfg.iters = 320
@@ -362,7 +453,12 @@ def build_config(objective: ObjectiveName, *, use_gpu: bool = False, visualize: 
         cfg.anneal_step_to = 0.2
         cfg.anneal_curiosity_from = 0.8
         cfg.anneal_curiosity_to = 0.25
-        cfg.early_patience = 70
+        cfg.early_patience = 60
+        cfg.early_tol = 1e-8
+        cfg.polish_h = 1e-3
+        cfg.w_intensity = 1.0
+        cfg.w_phase = 0.0
+        cfg.phase_span_pi = 2.0
 
     return cfg
 

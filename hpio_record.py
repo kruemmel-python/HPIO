@@ -202,9 +202,11 @@ class HPIORecorder:
         else:
             self.scatter.set_offsets(agents_px)
 
-    def frame(self, field_phi: np.ndarray, agents_px: np.ndarray):
+    def frame(self, field_phi: np.ndarray, agents_px: np.ndarray, *, title: str | None = None):
         self._update_left(field_phi, agents_px)
         self._update_right()
+        if title is not None:
+            self.axL.set_title(title, fontsize=11)
         if self.writer.backend == "ffmpeg":
             self.fig.canvas.draw()
             self.writer.add_frame_from_figure()
@@ -277,7 +279,10 @@ class RecordingRunner:
             if (it % self.viz_every) == 0 or it == self.cfg.iters:
                 pts = np.stack([a.pos for a in self.opt.agents], axis=0)
                 agents_px = self._world_to_grid_np(pts)
-                self.recorder.frame(self.opt.field.phi, agents_px)
+                title = None
+                if getattr(self.cfg, "overlay", False) or hasattr(self.cfg, "overlay"):
+                    title = f"|Φ| (log) + Agents  •  iter={it}  •  best={self.opt.gbest_val:.6g}"
+                self.recorder.frame(self.opt.field.phi, agents_px, title=title)
 
             if self.opt.gbest_val < last_best - self.cfg.early_tol:
                 last_best = self.opt.gbest_val
@@ -318,6 +323,18 @@ def main():
     ap.add_argument("--size", type=parse_size, default=(1280, 720), help="Videogröße WIDTHxHEIGHT")
     ap.add_argument("--viz-freq", type=int, default=1, help="Jede n-te Iteration als Frame")
     ap.add_argument("--seed", type=int, default=123, help="Zufalls-Seed")
+    ap.add_argument("--report-every", type=int, default=None, help="Alle n Iterationen loggen (überschreibt cfg.report_every)")
+    ap.add_argument("--overlay", action="store_true", help="Zeige Iteration & Bestwert live im Plot")
+
+    # Feintuning-Flags (bleiben erhalten)
+    ap.add_argument("--ackley-tight", action="store_true", help="Aggressives Tuning für Ackley (GPU empfohlen)")
+    ap.add_argument("--ackley-pro", action="store_true", help="Aggressives, bewährtes Ackley-Profil (GPU empfohlen)")
+    ap.add_argument("--cpu-pro", action="store_true", help="Bewährtes CPU-Profil für alle Objectives")
+
+    # Neue Presets (wirken zuletzt und überschreiben Flags)
+    ap.add_argument("--preset", choices=["ackley-gpu-pro","rastrigin-cpu-pro"],
+                    help="Voreinstellung für bewährte Konvergenz (überschreibt einzelne Flags)")
+
     args = ap.parse_args()
 
     out_path = Path(args.video)
@@ -327,9 +344,112 @@ def main():
 
     cfg = hpio.build_config(args.objective, use_gpu=args.gpu, visualize=False)
     cfg.seed = args.seed
-    cfg.report_every = max(10, cfg.report_every)
+    cfg.overlay = args.overlay  # Bequemlichkeits-Flag fürs Overlay im Recorder
 
+    # Report-Intervall
+    if args.report_every is not None:
+        cfg.report_every = max(1, args.report_every)
+    else:
+        cfg.report_every = max(10, cfg.report_every)
+
+    # Baseline: schärferes Early-Stopping + präziser Polish
+    cfg.early_patience = 60
+    cfg.early_tol = 1e-8
+    cfg.polish_h = 1e-3
+
+    # -------------------------------
+    # 1) Feintuning-Flags anwenden
+    # -------------------------------
+
+    # CPU-Profil (nur wenn GPU aus ist)
+    if args.cpu_pro and not args.gpu:
+        cfg.agent.momentum       = 0.72
+        cfg.agent.step           = max(0.016, cfg.agent.step)
+        cfg.field.relax_alpha    = min(0.36, cfg.field.relax_alpha)
+        cfg.field.kernel_sigma   = 1.6
+        cfg.agent.deposit_sigma  = 1.6  # leicht schmaler hilft oft
+        cfg.anneal_curiosity_to  = 0.16
+        cfg.anneal_step_to       = min(0.30, getattr(cfg, "anneal_step_to", 0.30))
+        cfg.w_intensity          = 1.00
+        cfg.w_phase              = 0.60
+        cfg.phase_span_pi        = 2.2
+        cfg.iters                = max(cfg.iters, 340)
+
+    # Ackley-Profil (GPU empfohlen)
+    if args.ackley_pro and args.objective == "ackley":
+        cfg.field.relax_alpha    = 0.30
+        cfg.field.kernel_sigma   = 1.6
+        cfg.agent.deposit_sigma  = 1.5
+        cfg.agent.momentum       = 0.72
+        cfg.agent.step           = 0.018
+        cfg.agent.coherence_gain = 0.46
+        cfg.anneal_curiosity_to  = 0.14
+        cfg.anneal_step_to       = 0.30
+        cfg.w_intensity          = 1.00
+        cfg.w_phase              = 0.55
+        cfg.phase_span_pi        = 2.4
+        cfg.iters                = max(cfg.iters, 400)
+
+    # „Tight“ für Ackley (kleine, fokussierte Anpassung)
+    if args.ackley_tight and args.objective == "ackley":
+        cfg.field.relax_alpha    = 0.30
+        cfg.agent.deposit_sigma  = 1.5
+        cfg.anneal_curiosity_to  = 0.14
+        cfg.iters                = max(cfg.iters, 400)
+
+    # -------------------------------
+    # 2) Preset anwenden (überschreibt Flags)
+    # -------------------------------
+    def apply_preset(cfg, name: str | None):
+        if not name:
+            return
+
+        # Gemeinsame Schärfung
+        cfg.early_patience = 60
+        cfg.early_tol      = 1e-8
+        cfg.polish_h       = 1e-3
+
+        if name == "ackley-gpu-pro":
+            # Zielbereich: ~0.02 bis 0.007 (GPU)
+            cfg.field.relax_alpha    = 0.28
+            cfg.field.kernel_sigma   = 1.6
+            cfg.agent.deposit_sigma  = 1.40
+            cfg.agent.momentum       = 0.68
+            cfg.agent.step           = 0.018
+            cfg.agent.coherence_gain = 0.48
+            cfg.anneal_curiosity_to  = 0.12
+            cfg.anneal_step_to       = 0.30
+            cfg.w_intensity          = 1.00
+            cfg.w_phase              = 0.60
+            cfg.phase_span_pi        = 2.4
+            cfg.iters                = max(cfg.iters, 420)
+
+        elif name == "rastrigin-cpu-pro":
+            # Weg vom 1.0-Ring ins Zentrum
+            cfg.field.relax_alpha    = 0.32
+            cfg.field.kernel_sigma   = 1.5
+            cfg.agent.deposit_sigma  = 1.50
+            cfg.agent.momentum       = 0.70
+            cfg.agent.step           = 0.017
+            cfg.agent.coherence_gain = 0.50
+            cfg.anneal_curiosity_to  = 0.14
+            cfg.anneal_step_to       = 0.25
+            cfg.w_intensity          = 1.00
+            cfg.w_phase              = 0.68
+            cfg.phase_span_pi        = 2.2
+            cfg.iters                = max(cfg.iters, 360)
+
+    apply_preset(cfg, args.preset)
+
+    # Kurzer Parameter-Snapshot ins Konsolen-Panel (links/rechts siehst du ja die Logbox)
     recorder = HPIORecorder(writer=writer, grid_size=cfg.field.grid_size, text_lines=28)
+    recorder.log(f"[CFG] gpu={cfg.use_gpu} iters={cfg.iters} report_every={cfg.report_every}")
+    recorder.log(f"[CFG] relax_alpha={cfg.field.relax_alpha} sigma={cfg.field.kernel_sigma} evap={cfg.field.evap}")
+    recorder.log(f"[CFG] deposit_sigma={cfg.agent.deposit_sigma} step={cfg.agent.step} momentum={cfg.agent.momentum}")
+    recorder.log(f"[CFG] w_intensity={cfg.w_intensity} w_phase={cfg.w_phase} phase_span_pi={cfg.phase_span_pi}")
+    recorder.log(f"[CFG] anneal_step_to={cfg.anneal_step_to} anneal_curiosity_to={cfg.anneal_curiosity_to}")
+    recorder.log("------------------------------------------------------------------")
+
     runner = RecordingRunner(cfg, recorder=recorder, viz_every=max(1, args.viz_freq))
 
     t0 = time.perf_counter()
