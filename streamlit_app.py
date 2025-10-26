@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import time
 from dataclasses import asdict, dataclass, field
 from itertools import product
@@ -150,6 +151,8 @@ class AppState:
     video_frames: list[tuple[int, bytes]] = field(default_factory=list)
     video_limit_notified: bool = False
     video_last_path: Optional[str] = None
+    video_progress_total: int = 0
+    video_summary: Optional[dict[str, Any]] = None
     parameter_dirty: bool = False
     experiment_results: dict[str, Any] = field(default_factory=dict)
 
@@ -302,6 +305,8 @@ def ensure_controller(state: AppState) -> None:
         state.last_result = None
         state.video_limit_notified = False
         state.video_last_path = None
+        state.video_progress_total = 0
+        state.video_summary = None
 
 
 def ensure_video_defaults(state: AppState) -> None:
@@ -319,6 +324,29 @@ def ensure_video_defaults(state: AppState) -> None:
         return
     for key, value in defaults.items():
         state.video_params.setdefault(key, value)
+
+
+def compute_expected_video_frames(state: AppState) -> int:
+    ensure_video_defaults(state)
+    video_freq = int(state.video_params.get("viz_freq", state.viz_every) or state.viz_every)
+    video_freq = max(1, video_freq)
+    total_iters = state.cfg.iters
+    if state.controller is not None:
+        total_iters = state.controller.cfg.iters
+    expected = math.ceil(total_iters / video_freq)
+    return max(1, int(expected))
+
+
+def format_bytes(num_bytes: int) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    value = float(num_bytes)
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} {units[-1]}"
 
 
 def execute_step(state: AppState) -> None:
@@ -539,6 +567,7 @@ def page_run(state: AppState) -> None:
             state.video_limit_notified = False
             state.last_result = None
             state._trails = []
+            state.video_summary = None
             trigger_rerun()
         if colB.button("Pause" if not state.paused else "Weiter", disabled=not state.running):
             if state.controller:
@@ -561,6 +590,7 @@ def page_run(state: AppState) -> None:
                 state.last_plot_png = None
                 state._trails = []
                 state.video_limit_notified = False
+                state.video_summary = None
                 trigger_rerun()
         if col_seed_reset.button("Reset + neuer Seed"):
             ensure_controller(state)
@@ -571,6 +601,7 @@ def page_run(state: AppState) -> None:
                 state.last_plot_png = None
                 state._trails = []
                 state.video_limit_notified = False
+                state.video_summary = None
                 trigger_rerun()
 
     if state.running and not state.paused:
@@ -936,6 +967,7 @@ def page_recording(state: AppState) -> None:
                 "encoder": encoder_preset,
                 "crf": int(crf),
             }
+            state.video_progress_total = compute_expected_video_frames(state)
             st.success("Video-Parameter aktualisiert.")
 
     col_start, col_stop = st.columns(2)
@@ -945,22 +977,78 @@ def page_recording(state: AppState) -> None:
         state.video_frames = []
         state.video_limit_notified = False
         state.video_last_path = None
+        state.video_progress_total = compute_expected_video_frames(state)
+        state.video_summary = None
         append_log(state, "🎬 Aufnahme gestartet")
     if col_stop.button("Aufnahme stoppen"):
+        ensure_video_defaults(state)
+        frames_captured = len(state.video_frames)
+        fps = int(state.video_params.get("fps", 30) or 30)
+        video_freq = int(state.video_params.get("viz_freq", state.viz_every) or state.viz_every)
+        video_freq = max(1, video_freq)
         state.video_active = False
         append_log(state, "🛑 Aufnahme gestoppt")
-        if state.video_frames:
+        if frames_captured:
             try:
                 saved_path = save_video_to_disk(state)
                 state.video_last_path = str(saved_path)
                 append_log(state, f"💾 Video gespeichert: {saved_path}")
                 st.success(f"Video gespeichert: {saved_path}")
+                duration = frames_captured / max(1, fps)
+                size_bytes = saved_path.stat().st_size
+                state.video_summary = {
+                    "status": "success",
+                    "path": str(saved_path),
+                    "frames": frames_captured,
+                    "fps": fps,
+                    "duration": duration,
+                    "size_bytes": size_bytes,
+                    "viz_freq": video_freq,
+                }
                 state.video_frames = []
             except Exception as exc:
                 st.error(f"Video konnte nicht gespeichert werden: {exc}")
                 append_log(state, f"❌ Video speichern fehlgeschlagen: {exc}")
+                state.video_summary = {
+                    "status": "error",
+                    "message": str(exc),
+                    "frames": frames_captured,
+                }
         else:
-            st.warning("Keine Frames aufgezeichnet – kein Video gespeichert.")
+            warning_msg = "Keine Frames aufgezeichnet – kein Video gespeichert."
+            st.warning(warning_msg)
+            state.video_summary = {
+                "status": "warning",
+                "message": warning_msg,
+            }
+        state.video_progress_total = 0
+
+    if state.video_active:
+        ensure_video_defaults(state)
+        total_frames = state.video_progress_total or compute_expected_video_frames(state)
+        captured_frames = len(state.video_frames)
+        fps = int(state.video_params.get("fps", 30) or 30)
+        progress_value = min(1.0, captured_frames / max(1, total_frames))
+        st.progress(progress_value)
+        st.caption(
+            f"Aufgezeichnete Frames: {captured_frames}/{total_frames} • ca. {captured_frames / max(1, fps):.1f} s bei {fps} FPS"
+        )
+
+    if state.video_summary:
+        summary = state.video_summary
+        status = summary.get("status", "info")
+        if status == "success":
+            details = [
+                f"Datei: {summary['path']}",
+                f"Frames: {summary['frames']} @ {summary['fps']} FPS (Viz-Frequenz {summary['viz_freq']})",
+                f"Dauer: {summary['duration']:.2f} s",
+                f"Größe: {format_bytes(summary['size_bytes'])}",
+            ]
+            st.success("**Kurzbericht Video**\n" + "\n".join(f"- {line}" for line in details))
+        elif status == "warning":
+            st.warning(summary.get("message", "Keine Informationen verfügbar."))
+        elif status == "error":
+            st.error(summary.get("message", "Unbekannter Fehler beim Speichern."))
 
     if state.video_frames:
         st.caption(f"Gespeicherte Frames: {len(state.video_frames)} / {MAX_VIDEO_FRAMES}")
