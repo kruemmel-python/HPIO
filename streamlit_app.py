@@ -1193,11 +1193,33 @@ def build_video_from_frames(
     if not frames:
         raise RuntimeError("Keine Frames vorhanden – Aufnahme starten und Lauf durchführen.")
 
-    imgs = []
+    raw_imgs: list[np.ndarray] = []
+    target_width = 0
+    target_height = 0
     for _, png in frames:
         img = imageio.imread(_io.BytesIO(png))
         if img.ndim == 2:
             img = np.stack([img] * 3, axis=-1)
+        elif img.ndim == 3 and img.shape[2] == 4:
+            img = img[:, :, :3]
+
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+
+        height, width = img.shape[0], img.shape[1]
+        even_height = height + (height % 2)
+        even_width = width + (width % 2)
+        target_height = max(target_height, even_height)
+        target_width = max(target_width, even_width)
+        raw_imgs.append(img)
+
+    imgs: list[np.ndarray] = []
+    for img in raw_imgs:
+        height, width = img.shape[0], img.shape[1]
+        pad_h = target_height - height
+        pad_w = target_width - width
+        if pad_h or pad_w:
+            img = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), mode="edge")
         imgs.append(img)
 
     fmt = fmt.lower()
@@ -1236,10 +1258,28 @@ def resolve_video_path(raw_filename: str, fmt: str) -> Path:
     path = Path(filename)
     if path.suffix.lower() != f".{fmt.lower()}":
         path = path.with_suffix(f".{fmt.lower()}")
-    if not path.is_absolute() and path.parent == Path("."):
-        path = Path("runs") / path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+
+    base_dir = Path("runs").resolve()
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    if path.is_absolute():
+        relative = Path(path.name)
+    else:
+        cleaned_parts: list[str] = []
+        for index, part in enumerate(path.parts):
+            if part in {"..", ".", ""}:
+                continue
+            if index == 0 and part == "runs":
+                continue
+            cleaned_parts.append(part)
+        relative = Path(*cleaned_parts) if cleaned_parts else Path(path.name)
+
+    final_path = (base_dir / relative).resolve()
+    if base_dir not in final_path.parents and final_path != base_dir:
+        final_path = (base_dir / path.name).resolve()
+
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    return final_path
 
 
 def save_video_to_disk(state: AppState) -> Path:
