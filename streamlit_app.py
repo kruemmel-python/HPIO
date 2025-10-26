@@ -379,7 +379,13 @@ def render_status_box(result: Optional[StepResult], state: AppState) -> None:
 
 def render_console(logs: list[str]) -> None:
     st.markdown("### Konsole")
-    st.text_area("", value="\n".join(logs[-400:]), height=360)
+    st.text_area(
+        "Konsole",
+        value="\n".join(logs[-400:]),
+        height=360,
+        key="console_textarea",
+        label_visibility="collapsed",
+    )
 
 
 def render_parameter_snapshot(cfg: HPIOConfig) -> None:
@@ -555,7 +561,7 @@ def page_run(state: AppState) -> None:
     with left:
         st.markdown("### Heatmap & Agents")
         if state.last_plot_png:
-            st.image(state.last_plot_png, use_column_width=True)
+            st.image(state.last_plot_png, use_container_width=True)
         else:
             st.info("Noch keine Visualisierung – Run starten oder Schritt ausführen.")
         render_parameter_snapshot(cfg)
@@ -1219,7 +1225,7 @@ def page_experiments(state: AppState) -> None:
 def page_help(state: AppState) -> None:
     st.markdown("## 📚 Hilfe & Dokumentation")
     st.markdown(
-        """
+        r"""
         ### Was ist HPIO?
         HPIO (Hybrid Pheromone Inspired Optimizer) kombiniert ein Feld \(Φ\), mehrere Agenten sowie
         Ablage- und Relaxationsmechanismen, um Zielfunktionen wie Rastrigin, Ackley oder Himmelblau zu minimieren.
