@@ -12,6 +12,7 @@ from typing import Any, Optional
 import numpy as np
 import streamlit as st
 from matplotlib import pyplot as plt
+from pathlib import Path
 
 from hpio import AgentParams, FieldParams, HPIO, HPIOConfig, build_config
 
@@ -148,6 +149,7 @@ class AppState:
     video_params: dict[str, Any] = field(default_factory=dict)
     video_frames: list[tuple[int, bytes]] = field(default_factory=list)
     video_limit_notified: bool = False
+    video_last_path: Optional[str] = None
     parameter_dirty: bool = False
     experiment_results: dict[str, Any] = field(default_factory=dict)
 
@@ -299,6 +301,24 @@ def ensure_controller(state: AppState) -> None:
         state.last_plot_png = None
         state.last_result = None
         state.video_limit_notified = False
+        state.video_last_path = None
+
+
+def ensure_video_defaults(state: AppState) -> None:
+    defaults = {
+        "filename": f"{state.cfg.objective}_seed{state.cfg.seed}.mp4",
+        "format": "mp4",
+        "fps": 30,
+        "viz_freq": max(1, state.viz_every),
+        "overlay": state.overlay,
+        "encoder": "medium",
+        "crf": 23,
+    }
+    if not state.video_params:
+        state.video_params = defaults.copy()
+        return
+    for key, value in defaults.items():
+        state.video_params.setdefault(key, value)
 
 
 def execute_step(state: AppState) -> None:
@@ -794,7 +814,14 @@ def page_presets(state: AppState) -> None:
 # Page: Aufnahme / Export
 # ---------------------------------------------------------------------------
 
-def build_video_from_frames(frames: list[tuple[int, bytes]], fps: int, fmt: str) -> tuple[str, bytes]:
+def build_video_from_frames(
+    frames: list[tuple[int, bytes]],
+    fps: int,
+    fmt: str,
+    *,
+    encoder: str = "medium",
+    crf: int = 23,
+) -> tuple[str, bytes]:
     import io as _io
 
     try:
@@ -815,6 +842,14 @@ def build_video_from_frames(frames: list[tuple[int, bytes]], fps: int, fmt: str)
     fmt = fmt.lower()
     ext = fmt if fmt in {"mp4", "mkv", "avi"} else "mp4"
     output = _io.BytesIO()
+    output_params: list[str] = []
+    if encoder:
+        output_params.extend(["-preset", str(encoder)])
+    if crf is not None:
+        output_params.extend(["-crf", str(int(crf))])
+    if ext == "mp4":
+        output_params.extend(["-movflags", "faststart"])
+
     writer = imageio.get_writer(
         output,
         format="ffmpeg",
@@ -823,7 +858,7 @@ def build_video_from_frames(frames: list[tuple[int, bytes]], fps: int, fmt: str)
         quality=None,
         macro_block_size=None,
         pixelformat="yuv420p",
-        output_params=["-movflags", "faststart"] if ext == "mp4" else [],
+        output_params=output_params,
     )
     with writer:
         for img in imgs:
@@ -832,10 +867,40 @@ def build_video_from_frames(frames: list[tuple[int, bytes]], fps: int, fmt: str)
     return ext, output.getvalue()
 
 
+def resolve_video_path(raw_filename: str, fmt: str) -> Path:
+    filename = raw_filename or "run.mp4"
+    path = Path(filename)
+    if path.suffix.lower() != f".{fmt.lower()}":
+        path = path.with_suffix(f".{fmt.lower()}")
+    if not path.is_absolute() and path.parent == Path("."):
+        path = Path("runs") / path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_video_to_disk(state: AppState) -> Path:
+    ensure_video_defaults(state)
+    fmt = state.video_params.get("format", "mp4")
+    fps = int(state.video_params.get("fps", 30) or 30)
+    encoder = state.video_params.get("encoder", "medium")
+    crf = int(state.video_params.get("crf", 23) or 23)
+    fmt, payload = build_video_from_frames(
+        state.video_frames,
+        fps=fps,
+        fmt=fmt,
+        encoder=encoder,
+        crf=crf,
+    )
+    path = resolve_video_path(state.video_params.get("filename", ""), fmt)
+    path.write_bytes(payload)
+    return path
+
+
 def page_recording(state: AppState) -> None:
     st.markdown("## 🎥 Aufnahme & Export")
     st.markdown("### Video-Einstellungen")
     stamp = time.strftime("%Y%m%d-%H%M%S")
+    ensure_video_defaults(state)
     with st.form("video_form"):
         filename = st.text_input("Dateiname", value=state.video_params.get("filename", "run.mp4"))
         format_choice = st.selectbox(
@@ -861,6 +926,7 @@ def page_recording(state: AppState) -> None:
         crf = st.slider("CRF (0-51)", min_value=0, max_value=51, value=int(state.video_params.get("crf", 23)))
         submitted = st.form_submit_button("Speichern")
         if submitted:
+            ensure_video_defaults(state)
             state.video_params = {
                 "filename": filename,
                 "format": format_choice,
@@ -874,13 +940,27 @@ def page_recording(state: AppState) -> None:
 
     col_start, col_stop = st.columns(2)
     if col_start.button("Aufnahme starten"):
+        ensure_video_defaults(state)
         state.video_active = True
         state.video_frames = []
         state.video_limit_notified = False
+        state.video_last_path = None
         append_log(state, "🎬 Aufnahme gestartet")
     if col_stop.button("Aufnahme stoppen"):
         state.video_active = False
         append_log(state, "🛑 Aufnahme gestoppt")
+        if state.video_frames:
+            try:
+                saved_path = save_video_to_disk(state)
+                state.video_last_path = str(saved_path)
+                append_log(state, f"💾 Video gespeichert: {saved_path}")
+                st.success(f"Video gespeichert: {saved_path}")
+                state.video_frames = []
+            except Exception as exc:
+                st.error(f"Video konnte nicht gespeichert werden: {exc}")
+                append_log(state, f"❌ Video speichern fehlgeschlagen: {exc}")
+        else:
+            st.warning("Keine Frames aufgezeichnet – kein Video gespeichert.")
 
     if state.video_frames:
         st.caption(f"Gespeicherte Frames: {len(state.video_frames)} / {MAX_VIDEO_FRAMES}")
@@ -892,6 +972,8 @@ def page_recording(state: AppState) -> None:
                     state.video_frames,
                     fps=int(state.video_params.get("fps", 30)),
                     fmt=state.video_params.get("format", "mp4"),
+                    encoder=state.video_params.get("encoder", "medium"),
+                    crf=int(state.video_params.get("crf", 23)),
                 )
                 st.download_button(
                     "Download Video",
@@ -904,6 +986,8 @@ def page_recording(state: AppState) -> None:
                 )
             except Exception as exc:
                 st.error(f"Video konnte nicht erzeugt werden: {exc}")
+    elif state.video_last_path:
+        st.success(f"Letztes gespeichertes Video: {state.video_last_path}")
 
     st.markdown("### Artefakte")
     cfg_json = json.dumps(config_to_nested(state.cfg), indent=2)
