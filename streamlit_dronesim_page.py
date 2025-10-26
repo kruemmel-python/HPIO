@@ -38,6 +38,30 @@ def bilinear_sample(arr: np.ndarray, x: float, y: float) -> float:
     return float(top * (1 - fy) + bot * fy)
 
 
+def bilinear_sample_vec(arr: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    """Bilineare Interpolation für Vektor-Eingaben (xs, ys)."""
+    h, w = arr.shape
+    xs = np.clip(xs, 0.0, w - 1.0)
+    ys = np.clip(ys, 0.0, h - 1.0)
+
+    x0 = np.floor(xs).astype(int)
+    y0 = np.floor(ys).astype(int)
+    x1 = np.clip(x0 + 1, 0, w - 1)
+    y1 = np.clip(y0 + 1, 0, h - 1)
+
+    fx = xs - x0
+    fy = ys - y0
+
+    Ia = arr[y0, x0]
+    Ib = arr[y0, x1]
+    Ic = arr[y1, x0]
+    Id = arr[y1, x1]
+
+    top = Ia * (1.0 - fx) + Ib * fx
+    bot = Ic * (1.0 - fx) + Id * fx
+    return (top * (1.0 - fy) + bot * fy).astype(np.float32)
+
+
 def box_blur(field: np.ndarray) -> np.ndarray:
     """3x3 Box-Blur ohne Randplateaus (nutzt reflektierendes Padding)."""
     h, w = field.shape
@@ -108,100 +132,98 @@ class SwarmController:
             return
 
         h, w = self.field.shape
-        # Feldgradient
-        gy, gx = np.gradient(self.field.astype(np.float32), edge_order=1)
+        field32 = self.field.astype(np.float32, copy=False)
+        gy, gx = np.gradient(field32, edge_order=1)
 
-        # Globalen Drift entfernen
         gx_bias = float(gx.mean())
         gy_bias = float(gy.mean())
 
-        # Globaler Schwerpunkt (für leichte Kohärenz)
-        mean_pos = np.mean([d.pos for d in self.drones], axis=0)
+        active_idx = [i for i, d in enumerate(self.drones) if d.active]
+        if not active_idx:
+            return
 
-        for i, d in enumerate(self.drones):
-            if not d.active:
-                continue
+        pos = np.vstack([self.drones[i].pos for i in active_idx]).astype(np.float32)
+        vel = np.vstack([self.drones[i].vel for i in active_idx]).astype(np.float32)
 
-            ix = int(np.clip(np.round(d.pos[0]), 0, w - 2))
-            iy = int(np.clip(np.round(d.pos[1]), 0, h - 2))
+        xs = pos[:, 0]
+        ys = pos[:, 1]
+        gx_s = bilinear_sample_vec(gx, xs, ys) - gx_bias
+        gy_s = bilinear_sample_vec(gy, xs, ys) - gy_bias
+        grad = np.stack([gx_s, gy_s], axis=1)
+        grad_norm = np.linalg.norm(grad, axis=1, keepdims=True) + 1e-8
+        grad_dir = grad / grad_norm
 
-            grad = np.array([
-                gx[iy, ix] - gx_bias,
-                gy[iy, ix] - gy_bias,
-            ], dtype=np.float32)
-            gn = np.linalg.norm(grad) + 1e-8
-            grad_dir = grad / gn
+        noise = np.random.normal(0.0, 1.0, size=grad.shape).astype(np.float32)
+        noise_norm = np.linalg.norm(noise, axis=1, keepdims=True) + 1e-8
+        noise_dir = noise / noise_norm
 
-            # Neugier + Kohärenz
-            noise = np.random.normal(0.0, 1.0, size=2).astype(np.float32)
-            noise /= (np.linalg.norm(noise) + 1e-8)
+        mean_pos = pos.mean(axis=0, keepdims=True)
+        coh_vec = mean_pos - pos
+        coh_norm = np.linalg.norm(coh_vec, axis=1, keepdims=True) + 1e-8
+        coh_dir = coh_vec / coh_norm
 
-            coh_vec = (mean_pos - d.pos).astype(np.float32)
-            coh_vec /= (np.linalg.norm(coh_vec) + 1e-8)
+        avoidance = np.zeros_like(pos)
+        if self.avoidance_radius > 0 and pos.shape[0] > 1:
+            diff = pos[:, None, :] - pos[None, :, :]
+            dist = np.linalg.norm(diff, axis=2) + 1e-8
+            mask = (dist < self.avoidance_radius) & (~np.eye(pos.shape[0], dtype=bool))
+            if np.any(mask):
+                weight = np.clip(1.0 - dist / self.avoidance_radius, 0.0, None)
+                dir_vec = diff / dist[..., None]
+                avoidance = (weight[..., None] * dir_vec * mask[..., None]).sum(axis=1).astype(np.float32)
 
-            # Einfache Kollisionsvermeidung (weiche Abstoßung)
-            avoid = np.zeros(2, dtype=np.float32)
-            if self.avoidance_radius > 0:
-                for j, o in enumerate(self.drones):
-                    if i == j:
-                        continue
-                    diff = d.pos - o.pos
-                    dist = float(np.linalg.norm(diff) + 1e-8)
-                    if 0 < dist < self.avoidance_radius:
-                        w_avoid = 1.0 - (dist / self.avoidance_radius)
-                        avoid += w_avoid * (diff / dist)
+        edge_r = 8.0
+        k_edge = 0.018
+        repel = np.zeros_like(pos)
+        if edge_r > 0:
+            left = pos[:, 0] < edge_r
+            repel[left, 0] += (edge_r - pos[left, 0]) / edge_r
+            right = pos[:, 0] > (w - 1 - edge_r)
+            repel[right, 0] -= (pos[right, 0] - (w - 1 - edge_r)) / edge_r
+            top = pos[:, 1] < edge_r
+            repel[top, 1] += (edge_r - pos[top, 1]) / edge_r
+            bottom = pos[:, 1] > (h - 1 - edge_r)
+            repel[bottom, 1] -= (pos[bottom, 1] - (h - 1 - edge_r)) / edge_r
 
-            # weiche Abstoßung von den 4 Wänden
-            edge_r = 8.0
-            k_edge = 0.018
-            repel = np.zeros(2, dtype=np.float32)
+        drive = (
+            0.65 * grad_dir
+            + (0.35 * float(self.curiosity)) * noise_dir
+            + self.coherence_gain * coh_dir
+            + 0.4 * avoidance
+            + k_edge * repel
+        ).astype(np.float32)
 
-            if d.pos[0] < edge_r:
-                repel[0] += (edge_r - d.pos[0]) / edge_r
-            elif d.pos[0] > (w - 1 - edge_r):
-                repel[0] -= (d.pos[0] - (w - 1 - edge_r)) / edge_r
+        vel = (self.momentum * vel + self.step * drive).astype(np.float32)
+        speed = np.linalg.norm(vel, axis=1, keepdims=True) + 1e-8
+        max_sp = max(0.4, 1.5 * self.step)
+        vel = vel * np.minimum(1.0, max_sp / speed)
 
-            if d.pos[1] < edge_r:
-                repel[1] += (edge_r - d.pos[1]) / edge_r
-            elif d.pos[1] > (h - 1 - edge_r):
-                repel[1] -= (d.pos[1] - (h - 1 - edge_r)) / edge_r
+        pos += vel
 
-            # Antriebsvektor (Gewichte gern im UI tunen)
-            drive = (
-                0.65 * grad_dir +
-                self.curiosity * 0.35 * noise +
-                self.coherence_gain * coh_vec +
-                0.4 * avoid +
-                k_edge * repel
-            )
+        for i in range(pos.shape[0]):
+            if pos[i, 0] < 0:
+                pos[i, 0] = -pos[i, 0]
+                vel[i, 0] = abs(vel[i, 0])
+            elif pos[i, 0] > w - 1:
+                pos[i, 0] = 2 * (w - 1) - pos[i, 0]
+                vel[i, 0] = -abs(vel[i, 0])
 
-            # Velocity-Update (Trägheit) + Schritt
-            d.vel = self.momentum * d.vel + (1.0 - self.momentum) * drive
-            # sanfte Kappung
-            sp = np.linalg.norm(d.vel) + 1e-8
-            max_sp = max(0.4, 1.5 * self.step)
-            if sp > max_sp:
-                d.vel *= (max_sp / sp)
+            if pos[i, 1] < 0:
+                pos[i, 1] = -pos[i, 1]
+                vel[i, 1] = abs(vel[i, 1])
+            elif pos[i, 1] > h - 1:
+                pos[i, 1] = 2 * (h - 1) - pos[i, 1]
+                vel[i, 1] = -abs(vel[i, 1])
 
-            d.pos += self.step * d.vel
-
-            # Ränder reflektierend
-            if d.pos[0] < 0:
-                d.pos[0] = -d.pos[0]; d.vel[0] = abs(d.vel[0])
-            elif d.pos[0] > w - 1:
-                d.pos[0] = 2 * (w - 1) - d.pos[0]; d.vel[0] = -abs(d.vel[0])
-
-            if d.pos[1] < 0:
-                d.pos[1] = -d.pos[1]; d.vel[1] = abs(d.vel[1])
-            elif d.pos[1] > h - 1:
-                d.pos[1] = 2 * (h - 1) - d.pos[1]; d.vel[1] = -abs(d.vel[1])
-
-            # Batterie & Ablage
+        for arr_idx, drone_idx in enumerate(active_idx):
+            d = self.drones[drone_idx]
+            d.pos[:] = pos[arr_idx]
+            d.vel[:] = vel[arr_idx]
             d.battery -= 0.001
             if d.battery <= 0:
                 d.active = False
-            else:
-                self._deposit(int(d.pos[0]), int(d.pos[1]))
+                continue
+            self._deposit(int(d.pos[0]), int(d.pos[1]))
 
         # Feld-Update: Verdunstung + Relaxation
         if self.evap > 0:
