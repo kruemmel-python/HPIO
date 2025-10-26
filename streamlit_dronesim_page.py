@@ -6,6 +6,7 @@ Die Drohnen folgen Gradienten, deponieren Spuren und koordinieren sich schwarmar
 """
 
 from __future__ import annotations
+import io
 import time
 import numpy as np
 import streamlit as st
@@ -13,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from numpy.random import Generator
 import matplotlib.pyplot as plt
+import imageio
 
 try:
     from streamlit_app import AppState
@@ -274,6 +276,8 @@ def page_dronesim(state: AppState) -> None:
 
         st.markdown("### Steuerung")
         start_btn = st.button("Start Simulation")
+        record_run = st.checkbox("Simulation aufzeichnen (GIF)", value=False)
+        record_fps = st.slider("GIF-Bildrate", 2, 30, 15, 1)
 
     # --- (Re)Init des Schwarms ----------------------------------------------
     need_init = False
@@ -319,6 +323,7 @@ def page_dronesim(state: AppState) -> None:
     progress = st.progress(0.0)
     placeholder = st.empty()
 
+    frames: list[np.ndarray] = []
     for i in range(int(run_steps)):
         # Optional: aktuelles HPIO-Φ einkoppeln (blenden), wenn vorhanden
         if live_coupling and "phi_snapshot" in st.session_state:
@@ -345,10 +350,28 @@ def page_dronesim(state: AppState) -> None:
             )
         ax.set_title(f"Iteration {swarm.iteration}", fontsize=12)
         ax.axis("off")
+        fig.canvas.draw()
+        if record_run:
+            width, height = fig.canvas.get_width_height()
+            frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            frame = frame.reshape((height, width, 3))
+            frames.append(frame)
         placeholder.pyplot(fig)
         plt.close(fig)
 
         time.sleep(0.02)
 
     st.success("Simulation abgeschlossen ✅")
+
+    if record_run and frames:
+        buffer = io.BytesIO()
+        frame_duration = 1.0 / max(1, int(record_fps))
+        imageio.mimsave(buffer, frames, format="gif", duration=frame_duration)
+        buffer.seek(0)
+        st.download_button(
+            "GIF herunterladen",
+            buffer,
+            file_name=f"dronesim_{int(time.time())}.gif",
+            mime="image/gif",
+        )
 
