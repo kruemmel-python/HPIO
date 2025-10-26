@@ -166,16 +166,7 @@ HPIO-Optimization-Suite/
 └── runs/
 ```
 
----
 
-## 📄 Lizenz & Autor
-
-**Autor:** Ralf Krümmel  
-**Version:** 1.0 · Oktober 2025  
-**Lizenz:** MIT License  
-© 2025 – *Hybrid Phase Interaction Optimization (HPIO)*
-
-> *“Optimization meets Nature – the beauty of convergence made visible.”*
 
 ---
 
@@ -243,3 +234,15 @@ sequenceDiagram
     deactivate CLI
 ```
 
+---
+
+## 📄 Lizenz & Autor
+
+**Autor:** Ralf Krümmel  
+**Version:** 1.0 · Oktober 2025  
+**Lizenz:** MIT License  
+© 2025 – *Hybrid Phase Interaction Optimization (HPIO)*
+
+> *“Optimization meets Nature – the beauty of convergence made visible.”*
+
+---
