@@ -158,6 +158,19 @@ def gpu_available() -> bool:
         return False
 
 
+def trigger_rerun() -> None:
+    """Request a rerun using the available Streamlit API."""
+
+    rerun_fn = getattr(st, "rerun", None)
+    if rerun_fn is None:
+        rerun_fn = getattr(st, "experimental_rerun", None)
+
+    if rerun_fn is None:
+        raise RuntimeError("Streamlit rerun API unavailable in this version")
+
+    rerun_fn()
+
+
 def get_state() -> AppState:
     if "app_state" not in st.session_state:
         base_cfg = build_config("rastrigin")
@@ -429,7 +442,7 @@ def page_run(state: AppState) -> None:
         cfg.seed = int(new_seed)
         if col_button.button("🎲 Zufalls-Seed"):
             cfg.seed = int(np.random.default_rng().integers(0, 2**32 - 1))
-            st.experimental_rerun()
+            trigger_rerun()
 
         cfg.iters = int(
             st.number_input(
@@ -473,15 +486,15 @@ def page_run(state: AppState) -> None:
             state.video_frames = []
             state.last_result = None
             state._trails = []
-            st.experimental_rerun()
+            trigger_rerun()
         if colB.button("Pause" if not state.paused else "Weiter"):
             if state.controller:
                 state.paused = not state.paused
-                st.experimental_rerun()
+                trigger_rerun()
         if colC.button("Stop"):
             state.running = False
             state.paused = False
-            st.experimental_rerun()
+            trigger_rerun()
 
         col_step, col_reset, col_seed_reset = st.columns(3)
         if col_step.button("Schritt vor"):
@@ -494,7 +507,7 @@ def page_run(state: AppState) -> None:
                 state.last_result = None
                 state.last_plot_png = None
                 state._trails = []
-                st.experimental_rerun()
+                trigger_rerun()
         if col_seed_reset.button("Reset + neuer Seed"):
             ensure_controller(state)
             if state.controller:
@@ -503,7 +516,7 @@ def page_run(state: AppState) -> None:
                 state.last_result = None
                 state.last_plot_png = None
                 state._trails = []
-                st.experimental_rerun()
+                trigger_rerun()
 
     if state.running and not state.paused:
         ensure_controller(state)
@@ -524,7 +537,7 @@ def page_run(state: AppState) -> None:
 
     if state.running and not state.paused:
         time.sleep(0.05)
-        st.experimental_rerun()
+        trigger_rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +645,7 @@ def page_parameters(state: AppState) -> None:
         state.cfg = build_config(state.cfg.objective)
         state.parameter_dirty = True
         state.controller = None
-        st.experimental_rerun()
+        trigger_rerun()
     if col_apply.button("Auf Preset übertragen"):
         state.parameter_dirty = True
         st.info("Preset-Übernahme erfolgt über die Preset-Seite.")
