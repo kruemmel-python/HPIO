@@ -6,6 +6,8 @@ from typing import Callable, Literal, Tuple
 
 import numpy as np
 
+AlgorithmName = Literal["hpio", "de", "pso", "ga"]
+
 ObjectiveName = Literal["rastrigin", "ackley", "himmelblau"]
 
 
@@ -35,6 +37,7 @@ class AgentParams:
 @dataclass
 class HPIOConfig:
     objective: ObjectiveName
+    algorithm: AlgorithmName = "hpio"
     iters: int = 420
     seed: int = 123
     use_gpu: bool = False
@@ -463,6 +466,204 @@ def build_config(objective: ObjectiveName, *, use_gpu: bool = False, visualize: 
     return cfg
 
 
+# ---------------------------------------------------------------------------
+# Zusätzliche Optimierungs-Algorithmen
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AlgorithmResult:
+    """Generische Ergebnisklasse für alternative Optimierer."""
+
+    best_position: np.ndarray
+    best_value: float
+    history: list[dict[str, float]]
+
+
+def _ensure_bounds(
+    rng: np.random.Generator,
+    bounds: tuple[tuple[float, float], tuple[float, float]],
+    size: tuple[int, int],
+) -> np.ndarray:
+    (xmin, xmax), (ymin, ymax) = bounds
+    xs = rng.uniform(xmin, xmax, size=size)
+    ys = rng.uniform(ymin, ymax, size=size)
+    return np.stack([xs, ys], axis=-1)
+
+
+def differential_evolution(
+    objective: ObjectiveName,
+    *,
+    cfg: HPIOConfig,
+    pop_size: int = 80,
+    mutation: float = 0.8,
+    crossover: float = 0.7,
+) -> AlgorithmResult:
+    """Einfache Differential-Evolution mit Best-of-Run Historie."""
+
+    rng = np.random.default_rng(cfg.seed)
+    f = OBJECTIVES[objective]
+    bounds = cfg.bounds
+
+    population = _ensure_bounds(rng, bounds, (pop_size, 2))
+    fitness = np.array([f(ind) for ind in population], dtype=np.float64)
+    best_idx = int(np.argmin(fitness))
+    best = population[best_idx].copy()
+    best_val = float(fitness[best_idx])
+
+    history: list[dict[str, float]] = []
+
+    indices = np.arange(pop_size)
+
+    for it in range(cfg.iters):
+        for idx in range(pop_size):
+            pool = np.delete(indices, idx)
+            idxs = rng.choice(pool, size=3, replace=False)
+            a, b, c = population[idxs]
+            mutant = np.clip(a + mutation * (b - c), [bounds[0][0], bounds[1][0]], [bounds[0][1], bounds[1][1]])
+            cross_mask = rng.random(2) < crossover
+            if not np.any(cross_mask):
+                cross_mask[rng.integers(0, 2)] = True
+            trial = np.where(cross_mask, mutant, population[idx])
+            val = float(f(trial))
+            if val <= fitness[idx]:
+                population[idx] = trial
+                fitness[idx] = val
+                if val <= best_val:
+                    best_val = val
+                    best = trial.copy()
+
+        history.append({
+            "iteration": float(it + 1),
+            "best_value": float(best_val),
+            "mean_fitness": float(fitness.mean()),
+        })
+
+    return AlgorithmResult(best_position=best, best_value=float(best_val), history=history)
+
+
+def particle_swarm_optimization(
+    objective: ObjectiveName,
+    *,
+    cfg: HPIOConfig,
+    swarm_size: int = 60,
+    inertia: float = 0.7,
+    cognitive: float = 1.4,
+    social: float = 1.4,
+) -> AlgorithmResult:
+    """Partikel-Schwarm-Optimierung mit Tracing."""
+
+    rng = np.random.default_rng(cfg.seed)
+    f = OBJECTIVES[objective]
+    bounds = cfg.bounds
+
+    positions = _ensure_bounds(rng, bounds, (swarm_size, 2))
+    velocities = rng.normal(scale=0.5, size=(swarm_size, 2))
+    personal_best = positions.copy()
+    personal_best_val = np.array([f(pos) for pos in positions], dtype=np.float64)
+
+    best_idx = int(np.argmin(personal_best_val))
+    global_best = personal_best[best_idx].copy()
+    global_best_val = float(personal_best_val[best_idx])
+
+    history: list[dict[str, float]] = []
+
+    for it in range(cfg.iters):
+        r1 = rng.random((swarm_size, 2))
+        r2 = rng.random((swarm_size, 2))
+        velocities = (
+            inertia * velocities
+            + cognitive * r1 * (personal_best - positions)
+            + social * r2 * (global_best - positions)
+        )
+        positions = positions + velocities
+        positions[:, 0] = np.clip(positions[:, 0], bounds[0][0], bounds[0][1])
+        positions[:, 1] = np.clip(positions[:, 1], bounds[1][0], bounds[1][1])
+
+        values = np.array([f(pos) for pos in positions], dtype=np.float64)
+        improved_mask = values < personal_best_val
+        personal_best[improved_mask] = positions[improved_mask]
+        personal_best_val[improved_mask] = values[improved_mask]
+
+        best_idx = int(np.argmin(personal_best_val))
+        if personal_best_val[best_idx] < global_best_val:
+            global_best_val = float(personal_best_val[best_idx])
+            global_best = personal_best[best_idx].copy()
+
+        history.append({
+            "iteration": float(it + 1),
+            "best_value": float(global_best_val),
+            "mean_fitness": float(personal_best_val.mean()),
+        })
+
+    return AlgorithmResult(best_position=global_best, best_value=float(global_best_val), history=history)
+
+
+def genetic_algorithm(
+    objective: ObjectiveName,
+    *,
+    cfg: HPIOConfig,
+    population_size: int = 80,
+    crossover_rate: float = 0.9,
+    mutation_rate: float = 0.1,
+    tournament_k: int = 3,
+) -> AlgorithmResult:
+    """Einfache reelle genetische Optimierung."""
+
+    rng = np.random.default_rng(cfg.seed)
+    f = OBJECTIVES[objective]
+    bounds = cfg.bounds
+
+    population = _ensure_bounds(rng, bounds, (population_size, 2))
+    fitness = np.array([f(ind) for ind in population], dtype=np.float64)
+
+    best_idx = int(np.argmin(fitness))
+    best = population[best_idx].copy()
+    best_val = float(fitness[best_idx])
+
+    history: list[dict[str, float]] = []
+
+    def tournament_select() -> np.ndarray:
+        idxs = rng.choice(population_size, size=tournament_k, replace=False)
+        best_local = idxs[np.argmin(fitness[idxs])]
+        return population[best_local]
+
+    for it in range(cfg.iters):
+        new_population = []
+        while len(new_population) < population_size:
+            parent1 = tournament_select()
+            parent2 = tournament_select()
+            if rng.random() < crossover_rate:
+                alpha = rng.random()
+                child1 = alpha * parent1 + (1 - alpha) * parent2
+                child2 = alpha * parent2 + (1 - alpha) * parent1
+            else:
+                child1, child2 = parent1.copy(), parent2.copy()
+
+            for child in (child1, child2):
+                if rng.random() < mutation_rate:
+                    child += rng.normal(scale=0.2, size=2)
+            new_population.extend([child1, child2])
+
+        population = np.array(new_population[:population_size])
+        population[:, 0] = np.clip(population[:, 0], bounds[0][0], bounds[0][1])
+        population[:, 1] = np.clip(population[:, 1], bounds[1][0], bounds[1][1])
+        fitness = np.array([f(ind) for ind in population], dtype=np.float64)
+
+        best_idx = int(np.argmin(fitness))
+        if fitness[best_idx] <= best_val:
+            best_val = float(fitness[best_idx])
+            best = population[best_idx].copy()
+
+        history.append({
+            "iteration": float(it + 1),
+            "best_value": float(best_val),
+            "mean_fitness": float(fitness.mean()),
+        })
+
+    return AlgorithmResult(best_position=best, best_value=float(best_val), history=history)
+
+
 __all__ = [
     "AgentState",
     "Field",
@@ -470,5 +671,9 @@ __all__ = [
     "AgentParams",
     "HPIOConfig",
     "HPIO",
+    "AlgorithmResult",
+    "differential_evolution",
+    "particle_swarm_optimization",
+    "genetic_algorithm",
     "build_config",
 ]

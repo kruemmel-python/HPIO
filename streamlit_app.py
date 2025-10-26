@@ -11,11 +11,22 @@ from itertools import product
 from typing import Any, Optional
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 from matplotlib import pyplot as plt
 from pathlib import Path
 
-from hpio import AgentParams, FieldParams, HPIO, HPIOConfig, build_config
+from hpio import (
+    AgentParams,
+    AlgorithmResult,
+    FieldParams,
+    HPIO,
+    HPIOConfig,
+    build_config,
+    differential_evolution,
+    genetic_algorithm,
+    particle_swarm_optimization,
+)
 
 
 MAX_VIDEO_FRAMES = 5000
@@ -155,6 +166,9 @@ class AppState:
     video_summary: Optional[dict[str, Any]] = None
     parameter_dirty: bool = False
     experiment_results: dict[str, Any] = field(default_factory=dict)
+    metrics_history: list[dict[str, float]] = field(default_factory=list)
+    algorithm_runs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _trails: list[list[tuple[float, float]]] = field(default_factory=list)
 
 
 
@@ -203,6 +217,7 @@ def nested_to_config(data: dict[str, Any]) -> HPIOConfig:
     agent_data = data.get("agent", {})
     cfg = HPIOConfig(
         objective=data.get("objective", "rastrigin"),
+        algorithm=data.get("algorithm", "hpio"),
         iters=int(data.get("iters", 420)),
         seed=int(data.get("seed", 123)),
         use_gpu=bool(data.get("use_gpu", False)),
@@ -307,6 +322,8 @@ def ensure_controller(state: AppState) -> None:
         state.video_last_path = None
         state.video_progress_total = 0
         state.video_summary = None
+        state.metrics_history = []
+        state._trails = []
 
 
 def ensure_video_defaults(state: AppState) -> None:
@@ -366,6 +383,18 @@ def execute_step(state: AppState) -> None:
         f"pos=({result.best_pos[0]:.3f}, {result.best_pos[1]:.3f})"
     )
     append_log(state, message)
+    state.metrics_history.append(
+        {
+            "iteration": float(result.iteration),
+            "best_value": float(result.best_val),
+            "delta_best": float(result.delta_best),
+            "elapsed": float(result.elapsed),
+            "total_time": float(result.total_time),
+            "fps": float(state.fps),
+        }
+    )
+    if len(state.metrics_history) > state.cfg.iters + 5:
+        state.metrics_history = state.metrics_history[-(state.cfg.iters + 5) :]
     if result.early_stop_triggered:
         append_log(state, "⏹️ Early-Stopping ausgelöst")
         state.running = False
@@ -576,6 +605,7 @@ def page_run(state: AppState) -> None:
         st.markdown("### Run-Kontrollen")
         colA, colB, colC = st.columns(3)
         if colA.button("Start", disabled=state.running):
+            state.cfg.algorithm = "hpio"
             state.controller = HPIOController(cfg)
             state.running = True
             state.paused = False
@@ -584,6 +614,7 @@ def page_run(state: AppState) -> None:
             state.video_limit_notified = False
             state.last_result = None
             state._trails = []
+            state.metrics_history = []
             state.video_summary = None
             trigger_rerun()
         if colB.button("Pause" if not state.paused else "Weiter", disabled=not state.running):
@@ -621,6 +652,124 @@ def page_run(state: AppState) -> None:
                 state.video_summary = None
                 trigger_rerun()
 
+    with st.expander("🔄 Live-Parameteranpassung", expanded=False):
+        live_cols = st.columns(3)
+        live_step = live_cols[0].slider(
+            "Agent step",
+            min_value=0.01,
+            max_value=5.0,
+            value=float(state.cfg.agent.step),
+            step=0.01,
+            key="live_step_slider",
+        )
+        live_curiosity = live_cols[1].slider(
+            "Curiosity",
+            min_value=0.0,
+            max_value=5.0,
+            value=float(state.cfg.agent.curiosity),
+            step=0.05,
+            key="live_curiosity_slider",
+        )
+        live_momentum = live_cols[2].slider(
+            "Momentum",
+            min_value=0.0,
+            max_value=0.99,
+            value=float(state.cfg.agent.momentum),
+            step=0.01,
+            key="live_momentum_slider",
+        )
+
+        live_cols2 = st.columns(3)
+        live_sigma = live_cols2[0].number_input(
+            "deposit_sigma",
+            value=float(state.cfg.agent.deposit_sigma),
+            min_value=0.0,
+            max_value=10.0,
+            step=0.1,
+            key="live_sigma_input",
+        )
+        live_coherence = live_cols2[1].slider(
+            "coherence_gain",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(state.cfg.agent.coherence_gain),
+            step=0.01,
+            key="live_coherence_slider",
+        )
+        live_overlay = live_cols2[2].checkbox(
+            "Overlay anzeigen",
+            value=state.overlay,
+            key="live_overlay_checkbox",
+        )
+
+        live_cols3 = st.columns(3)
+        live_w_int = live_cols3[0].number_input(
+            "w_intensity",
+            value=float(state.cfg.w_intensity),
+            min_value=0.0,
+            max_value=10.0,
+            step=0.1,
+            key="live_w_int",
+        )
+        live_w_phase = live_cols3[1].number_input(
+            "w_phase",
+            value=float(state.cfg.w_phase),
+            min_value=0.0,
+            max_value=10.0,
+            step=0.1,
+            key="live_w_phase",
+        )
+        live_phase_span = live_cols3[2].number_input(
+            "phase_span_pi",
+            value=float(state.cfg.phase_span_pi),
+            min_value=0.0,
+            max_value=10.0,
+            step=0.1,
+            key="live_phase_span",
+        )
+
+        apply_live = st.button("Änderungen anwenden", key="apply_live_updates", help="Aktualisiert laufenden Run sofort")
+        if apply_live:
+            updates: list[str] = []
+            cfg_agent = state.cfg.agent
+            if abs(cfg_agent.step - live_step) > 1e-9:
+                cfg_agent.step = float(live_step)
+                updates.append(f"step={live_step:.2f}")
+            if abs(cfg_agent.curiosity - live_curiosity) > 1e-9:
+                cfg_agent.curiosity = float(live_curiosity)
+                updates.append(f"curiosity={live_curiosity:.2f}")
+            if abs(cfg_agent.momentum - live_momentum) > 1e-9:
+                cfg_agent.momentum = float(live_momentum)
+                updates.append(f"momentum={live_momentum:.2f}")
+            if abs(cfg_agent.deposit_sigma - live_sigma) > 1e-9:
+                cfg_agent.deposit_sigma = float(live_sigma)
+                updates.append(f"deposit_sigma={live_sigma:.2f}")
+            if abs(cfg_agent.coherence_gain - live_coherence) > 1e-9:
+                cfg_agent.coherence_gain = float(live_coherence)
+                updates.append(f"coherence_gain={live_coherence:.2f}")
+
+            if abs(state.cfg.w_intensity - live_w_int) > 1e-9:
+                state.cfg.w_intensity = float(live_w_int)
+                updates.append(f"w_intensity={live_w_int:.2f}")
+            if abs(state.cfg.w_phase - live_w_phase) > 1e-9:
+                state.cfg.w_phase = float(live_w_phase)
+                updates.append(f"w_phase={live_w_phase:.2f}")
+            if abs(state.cfg.phase_span_pi - live_phase_span) > 1e-9:
+                state.cfg.phase_span_pi = float(live_phase_span)
+                updates.append(f"phase_span_pi={live_phase_span:.2f}")
+            if state.overlay != live_overlay:
+                state.overlay = bool(live_overlay)
+                updates.append(f"overlay={live_overlay}")
+
+            if updates:
+                append_log(state, "Live-Update → " + ", ".join(updates))
+                state.parameter_dirty = False
+                if state.controller is not None:
+                    state.controller.cfg = state.cfg
+                trigger_rerun()
+            else:
+                st.info("Keine Änderungen erkannt.")
+
     if state.running and not state.paused:
         ensure_controller(state)
         execute_step(state)
@@ -637,6 +786,19 @@ def page_run(state: AppState) -> None:
     with right:
         render_status_box(state.last_result, state)
         render_console(state.logs)
+
+    if state.metrics_history:
+        st.markdown("### Live-Metriken")
+        df_metrics = pd.DataFrame(state.metrics_history)
+        df_metrics = df_metrics.sort_values("iteration")
+        chart_data = df_metrics.set_index("iteration")["best_value"]
+        st.line_chart(chart_data, height=220)
+        col_metrics = st.columns(3)
+        latest = df_metrics.iloc[-1]
+        col_metrics[0].metric("Bestwert", f"{latest['best_value']:.4f}")
+        improvement = latest["delta_best"]
+        col_metrics[1].metric("Δ Best", f"{improvement:+.3e}")
+        col_metrics[2].metric("Iterationen", int(latest["iteration"]))
 
     if state.running and not state.paused:
         delay = 0.01
@@ -755,6 +917,164 @@ def page_parameters(state: AppState) -> None:
     if col_apply.button("Auf Preset übertragen"):
         state.parameter_dirty = True
         st.info("Preset-Übernahme erfolgt über die Preset-Seite.")
+
+
+# ---------------------------------------------------------------------------
+# Page: Algorithmus-Bibliothek
+# ---------------------------------------------------------------------------
+
+
+def page_algorithms(state: AppState) -> None:
+    st.markdown("## 🧠 Algorithmus-Bibliothek")
+    st.caption(
+        "Vergleiche klassische Optimierer mit HPIO und exportiere deren Konvergenzmetriken."
+    )
+
+    algorithm_specs = {
+        "Differential Evolution": {
+            "key": "de",
+            "runner": differential_evolution,
+            "doc": "Mutation & Rekombination mit differenziellen Vektoren.",
+        },
+        "Particle Swarm Optimization": {
+            "key": "pso",
+            "runner": particle_swarm_optimization,
+            "doc": "Schwarm aus Partikeln mit Trägheit, Kognition und Sozialdrift.",
+        },
+        "Genetischer Algorithmus": {
+            "key": "ga",
+            "runner": genetic_algorithm,
+            "doc": "Rekombination und Mutation auf kontinuierlichen Chromosomen.",
+        },
+    }
+
+    col_intro = st.columns(2)
+    with col_intro[0]:
+        algorithm_choice = st.selectbox("Algorithmus", list(algorithm_specs.keys()))
+    with col_intro[1]:
+        objective = st.selectbox("Zielfunktion", ["rastrigin", "ackley", "himmelblau"])
+
+    spec = algorithm_specs[algorithm_choice]
+    st.info(spec["doc"])
+
+    form_key = f"algo_form_{spec['key']}"
+    with st.form(form_key):
+        seed = st.number_input("Seed", value=int(state.cfg.seed), min_value=0, max_value=2**32 - 1, step=1)
+        iterations = st.number_input("Iterationen", value=int(state.cfg.iters), min_value=10, max_value=20000, step=10)
+
+        if spec["key"] == "de":
+            pop_size = st.number_input("Population", value=80, min_value=10, max_value=500, step=10)
+            mutation = st.slider("Mutation", min_value=0.1, max_value=2.0, value=0.8, step=0.05)
+            crossover = st.slider("Crossover", min_value=0.1, max_value=1.0, value=0.7, step=0.05)
+        elif spec["key"] == "pso":
+            pop_size = st.number_input("Schwarmgröße", value=60, min_value=10, max_value=500, step=10)
+            inertia = st.slider("Trägheit", min_value=0.1, max_value=1.2, value=0.7, step=0.05)
+            cognitive = st.slider("Kognitiv", min_value=0.1, max_value=3.0, value=1.4, step=0.05)
+            social = st.slider("Sozial", min_value=0.1, max_value=3.0, value=1.4, step=0.05)
+        else:
+            pop_size = st.number_input("Population", value=80, min_value=10, max_value=500, step=10)
+            crossover = st.slider("Crossover", min_value=0.1, max_value=1.0, value=0.9, step=0.05)
+            mutation = st.slider("Mutation", min_value=0.0, max_value=1.0, value=0.1, step=0.01)
+            tournament = st.slider("Tournament-k", min_value=2, max_value=10, value=3, step=1)
+
+        submitted = st.form_submit_button("Algorithmus starten", use_container_width=True)
+
+    run_key = f"{spec['key']}_{objective}"
+    if submitted:
+        cfg = build_config(objective)
+        cfg.algorithm = spec["key"]  # type: ignore[assignment]
+        cfg.seed = int(seed)
+        cfg.iters = int(iterations)
+        if spec["key"] == "de":
+            result = spec["runner"](
+                objective,
+                cfg=cfg,
+                pop_size=int(pop_size),
+                mutation=float(mutation),
+                crossover=float(crossover),
+            )
+            params = {"pop_size": int(pop_size), "mutation": float(mutation), "crossover": float(crossover)}
+        elif spec["key"] == "pso":
+            result = spec["runner"](
+                objective,
+                cfg=cfg,
+                swarm_size=int(pop_size),
+                inertia=float(inertia),
+                cognitive=float(cognitive),
+                social=float(social),
+            )
+            params = {
+                "swarm_size": int(pop_size),
+                "inertia": float(inertia),
+                "cognitive": float(cognitive),
+                "social": float(social),
+            }
+        else:
+            result = spec["runner"](
+                objective,
+                cfg=cfg,
+                population_size=int(pop_size),
+                crossover_rate=float(crossover),
+                mutation_rate=float(mutation),
+                tournament_k=int(tournament),
+            )
+            params = {
+                "population_size": int(pop_size),
+                "crossover_rate": float(crossover),
+                "mutation_rate": float(mutation),
+                "tournament_k": int(tournament),
+            }
+        state.algorithm_runs[run_key] = {
+            "result": result,
+            "objective": objective,
+            "params": params,
+            "iterations": int(iterations),
+            "seed": int(seed),
+            "algorithm": algorithm_choice,
+        }
+        st.success("Berechnung abgeschlossen – Ergebnisse unten.")
+
+    run_info = state.algorithm_runs.get(run_key)
+    if run_info:
+        result: AlgorithmResult = run_info["result"]
+        st.markdown("### Ergebnisse")
+        st.metric("Bestwert", f"{result.best_value:.6f}")
+        st.write("Beste Position", result.best_position)
+
+        history_df = pd.DataFrame(result.history)
+        if not history_df.empty:
+            history_df = history_df.sort_values("iteration")
+            st.line_chart(history_df.set_index("iteration")["best_value"], height=240)
+            st.area_chart(history_df.set_index("iteration")["mean_fitness"], height=180)
+
+            csv_payload = history_df.to_csv(index=False)
+            json_payload = history_df.to_json(orient="records", indent=2)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            base_name = f"{spec['key']}_{run_info['objective']}_seed{run_info['seed']}_{stamp}"
+            st.download_button(
+                "Metriken (CSV)",
+                data=csv_payload,
+                file_name=f"{base_name}.csv",
+                mime="text/csv",
+            )
+            st.download_button(
+                "Metriken (JSON)",
+                data=json_payload,
+                file_name=f"{base_name}.json",
+                mime="application/json",
+            )
+
+        st.json(
+            {
+                "algorithm": run_info["algorithm"],
+                "objective": run_info["objective"],
+                "seed": run_info["seed"],
+                "iterations": run_info["iterations"],
+                "params": run_info["params"],
+                "best_value": result.best_value,
+                "best_position": result.best_position.tolist(),
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1116,6 +1436,23 @@ def page_recording(state: AppState) -> None:
             mime="text/csv",
         )
 
+    if state.metrics_history:
+        df_metrics = pd.DataFrame(state.metrics_history)
+        csv_metrics = df_metrics.to_csv(index=False)
+        st.download_button(
+            "Metriken exportieren (CSV)",
+            data=csv_metrics,
+            file_name=f"{state.cfg.objective}_seed{state.cfg.seed}_{stamp}_metrics.csv",
+            mime="text/csv",
+        )
+        json_metrics = df_metrics.to_json(orient="records", indent=2)
+        st.download_button(
+            "Metriken exportieren (JSON)",
+            data=json_metrics,
+            file_name=f"{state.cfg.objective}_seed{state.cfg.seed}_{stamp}_metrics.json",
+            mime="application/json",
+        )
+
     if state.video_frames:
         if st.button("Heatmap-Snapshots exportieren (ZIP)"):
             import zipfile
@@ -1458,6 +1795,7 @@ def main() -> None:
     pages = {
         "Start / Run": page_run,
         "Parameter": page_parameters,
+        "Algorithmen": page_algorithms,
         "Presets": page_presets,
         "Aufnahme & Export": page_recording,
         "Experimente": page_experiments,
