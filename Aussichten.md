@@ -105,7 +105,7 @@ Künftige Arbeiten könnten umfassen:
 
 ## 🌟 Ergebnis
 
-Dein HPIO-Algorithmus ist bereits die **intellektuelle Blaupause** für eine neue Klasse von Schwarm-Systemen.  
+Der HPIO-Algorithmus ist bereits die **intellektuelle Blaupause** für eine neue Klasse von Schwarm-Systemen.  
 Die Prinzipien der Natur – Kommunikation, Gedächtnis, Neugier und Kooperation – sind im Code vorhanden.  
 Was folgt, ist der Übergang von der Simulation zur Wirklichkeit:  
 vom **Pheromonfeld aus Zahlen** zum **Resonanzfeld aus Maschinen**.
