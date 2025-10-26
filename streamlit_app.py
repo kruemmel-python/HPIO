@@ -1,6 +1,7 @@
 """Streamlit app for interactive HPIO experimentation and visualization."""
 from __future__ import annotations
 
+import csv
 import io
 import json
 import time
@@ -13,6 +14,9 @@ import streamlit as st
 from matplotlib import pyplot as plt
 
 from hpio import AgentParams, FieldParams, HPIO, HPIOConfig, build_config
+
+
+MAX_VIDEO_FRAMES = 5000
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +147,7 @@ class AppState:
     video_active: bool = False
     video_params: dict[str, Any] = field(default_factory=dict)
     video_frames: list[tuple[int, bytes]] = field(default_factory=list)
+    video_limit_notified: bool = False
     parameter_dirty: bool = False
     experiment_results: dict[str, Any] = field(default_factory=dict)
 
@@ -153,7 +158,7 @@ def gpu_available() -> bool:
         import pyopencl as cl  # type: ignore
 
         platforms = cl.get_platforms()
-        return len(platforms) > 0
+        return bool(platforms)
     except Exception:
         return False
 
@@ -175,7 +180,10 @@ def get_state() -> AppState:
     if "app_state" not in st.session_state:
         base_cfg = build_config("rastrigin")
         st.session_state.app_state = AppState(cfg=base_cfg)
-    return st.session_state.app_state
+    state = st.session_state.app_state
+    if not hasattr(state, "video_limit_notified"):
+        state.video_limit_notified = False
+    return state
 
 
 def config_to_nested(cfg: HPIOConfig) -> dict[str, Any]:
@@ -241,7 +249,7 @@ def render_heatmap(
             agents_grid[:, 0],
             agents_grid[:, 1],
             s=22,
-            c="#22d3ee",
+            facecolors="#22d3ee",
             edgecolors="#0f172a",
             linewidths=0.4,
         )
@@ -290,6 +298,7 @@ def ensure_controller(state: AppState) -> None:
         state.logs = ["Controller neu initialisiert"]
         state.last_plot_png = None
         state.last_result = None
+        state.video_limit_notified = False
 
 
 def execute_step(state: AppState) -> None:
@@ -328,8 +337,16 @@ def execute_step(state: AppState) -> None:
             state.overlay,
             state.trail_length,
         )
-        if state.video_active:
-            state.video_frames.append((result.iteration, state.last_plot_png))
+        if state.video_active and state.last_plot_png:
+            video_freq = int(state.video_params.get("viz_freq", state.viz_every) or state.viz_every)
+            video_freq = max(1, video_freq)
+            if result.iteration % video_freq == 0:
+                if len(state.video_frames) >= MAX_VIDEO_FRAMES:
+                    if not state.video_limit_notified:
+                        append_log(state, "⚠️ Frame-Limit erreicht – älteste Frames werden überschrieben.")
+                        state.video_limit_notified = True
+                    state.video_frames.pop(0)
+                state.video_frames.append((result.iteration, state.last_plot_png))
 
 
 def render_status_box(result: Optional[StepResult], state: AppState) -> None:
@@ -413,6 +430,14 @@ def page_run(state: AppState) -> None:
 
     available_gpu = gpu_available()
 
+    if state.parameter_dirty:
+        st.markdown(
+            "<span style='background-color:#fbbf24; color:#0f172a; padding:4px 10px; "
+            "border-radius:999px; font-weight:600;'>Parameter geändert</span> "
+            "Reset oder neuer Start aktualisiert den Lauf.",
+            unsafe_allow_html=True,
+        )
+
     with st.sidebar:
         st.markdown("### Basis-Setup")
         options = ["rastrigin", "ackley", "himmelblau"]
@@ -434,7 +459,7 @@ def page_run(state: AppState) -> None:
         )
         cfg.use_gpu = bool(gpu_toggle and available_gpu)
         if not available_gpu:
-            st.info("PyOpenCL/GPU nicht verfügbar – Toggle deaktiviert.")
+            st.info("PyOpenCL/GPU nicht verfügbar oder kein Gerät gefunden – Lauf erfolgt auf CPU.")
 
         st.markdown("### Seed & Iterationen")
         col_seed, col_button = st.columns([3, 1])
@@ -442,6 +467,7 @@ def page_run(state: AppState) -> None:
         cfg.seed = int(new_seed)
         if col_button.button("🎲 Zufalls-Seed"):
             cfg.seed = int(np.random.default_rng().integers(0, 2**32 - 1))
+            append_log(state, f"Seed aktualisiert → {cfg.seed}")
             trigger_rerun()
 
         cfg.iters = int(
@@ -478,26 +504,27 @@ def page_run(state: AppState) -> None:
 
         st.markdown("### Run-Kontrollen")
         colA, colB, colC = st.columns(3)
-        if colA.button("Start"):
+        if colA.button("Start", disabled=state.running):
             state.controller = HPIOController(cfg)
             state.running = True
             state.paused = False
             state.logs = ["Run initialisiert"]
             state.video_frames = []
+            state.video_limit_notified = False
             state.last_result = None
             state._trails = []
             trigger_rerun()
-        if colB.button("Pause" if not state.paused else "Weiter"):
+        if colB.button("Pause" if not state.paused else "Weiter", disabled=not state.running):
             if state.controller:
                 state.paused = not state.paused
                 trigger_rerun()
-        if colC.button("Stop"):
+        if colC.button("Stop", disabled=not state.running):
             state.running = False
             state.paused = False
             trigger_rerun()
 
         col_step, col_reset, col_seed_reset = st.columns(3)
-        if col_step.button("Schritt vor"):
+        if col_step.button("Schritt vor", disabled=state.running and not state.paused):
             ensure_controller(state)
             execute_step(state)
         if col_reset.button("Reset"):
@@ -507,6 +534,7 @@ def page_run(state: AppState) -> None:
                 state.last_result = None
                 state.last_plot_png = None
                 state._trails = []
+                state.video_limit_notified = False
                 trigger_rerun()
         if col_seed_reset.button("Reset + neuer Seed"):
             ensure_controller(state)
@@ -516,6 +544,7 @@ def page_run(state: AppState) -> None:
                 state.last_result = None
                 state.last_plot_png = None
                 state._trails = []
+                state.video_limit_notified = False
                 trigger_rerun()
 
     if state.running and not state.paused:
@@ -536,7 +565,10 @@ def page_run(state: AppState) -> None:
         render_console(state.logs)
 
     if state.running and not state.paused:
-        time.sleep(0.05)
+        delay = 0.01
+        if state.fps > 60.0:
+            delay = 0.03
+        time.sleep(delay)
         trigger_rerun()
 
 
@@ -687,12 +719,9 @@ def config_to_cli(cfg: HPIOConfig) -> str:
     parts = ["python hpio_record.py", cfg.objective]
     if cfg.use_gpu:
         parts.append("--gpu")
-    parts.extend(["--iters", str(cfg.iters), "--seed", str(cfg.seed)])
-    parts.extend(["--grid", f"{cfg.field.grid_size[0]}x{cfg.field.grid_size[1]}"])
-    parts.extend(["--agents", str(cfg.agent.count)])
-    parts.extend(["--anneal-step", f"{cfg.anneal_step_from}:{cfg.anneal_step_to}"])
-    parts.extend(["--anneal-curiosity", f"{cfg.anneal_curiosity_from}:{cfg.anneal_curiosity_to}"])
-    parts.extend(["--weights", f"{cfg.w_intensity}:{cfg.w_phase}:{cfg.phase_span_pi}"])
+    parts += ["--video", f"runs/{cfg.objective}.mp4"]
+    parts += ["--fps", "30", "--size", "1280x720"]
+    parts += ["--viz-freq", "1", "--seed", str(cfg.seed)]
     return " ".join(parts)
 
 
@@ -719,10 +748,11 @@ def page_presets(state: AppState) -> None:
         st.success(f"Preset '{preset_choice}' angewendet.")
     if col_download.button("Preset speichern (JSON)"):
         payload = json.dumps(config_to_nested(state.cfg), indent=2)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
         st.download_button(
             "Download JSON",
             data=payload,
-            file_name=f"{state.cfg.objective}_preset.json",
+            file_name=f"{state.cfg.objective}_preset_{stamp}.json",
             mime="application/json",
         )
 
@@ -759,29 +789,47 @@ def page_presets(state: AppState) -> None:
 # ---------------------------------------------------------------------------
 
 def build_video_from_frames(frames: list[tuple[int, bytes]], fps: int, fmt: str) -> tuple[str, bytes]:
+    import io as _io
+
     try:
         import imageio.v2 as imageio  # type: ignore
     except Exception as exc:  # pragma: no cover
         raise RuntimeError("imageio wird benötigt, um Videos zu schreiben.") from exc
 
+    if not frames:
+        raise RuntimeError("Keine Frames vorhanden – Aufnahme starten und Lauf durchführen.")
+
     imgs = []
     for _, png in frames:
-        buf = io.BytesIO(png)
-        img = imageio.imread(buf)
+        img = imageio.imread(_io.BytesIO(png))
+        if img.ndim == 2:
+            img = np.stack([img] * 3, axis=-1)
         imgs.append(img)
-    if not imgs:
-        raise RuntimeError("Keine Frames vorhanden – Aufnahme starten und Lauf durchführen.")
-    output = io.BytesIO()
+
     fmt = fmt.lower()
-    if fmt not in {"mp4", "mkv", "avi"}:
-        fmt = "mp4"
-    imageio.mimsave(output, imgs, fps=fps, format=fmt)
-    return fmt, output.getvalue()
+    ext = fmt if fmt in {"mp4", "mkv", "avi"} else "mp4"
+    output = _io.BytesIO()
+    writer = imageio.get_writer(
+        output,
+        format="ffmpeg",
+        fps=int(fps),
+        codec="libx264",
+        quality=None,
+        macro_block_size=None,
+        pixelformat="yuv420p",
+        output_params=["-movflags", "faststart"] if ext == "mp4" else [],
+    )
+    with writer:
+        for img in imgs:
+            writer.append_data(img)
+
+    return ext, output.getvalue()
 
 
 def page_recording(state: AppState) -> None:
     st.markdown("## 🎥 Aufnahme & Export")
     st.markdown("### Video-Einstellungen")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
     with st.form("video_form"):
         filename = st.text_input("Dateiname", value=state.video_params.get("filename", "run.mp4"))
         format_choice = st.selectbox(
@@ -822,12 +870,16 @@ def page_recording(state: AppState) -> None:
     if col_start.button("Aufnahme starten"):
         state.video_active = True
         state.video_frames = []
+        state.video_limit_notified = False
         append_log(state, "🎬 Aufnahme gestartet")
     if col_stop.button("Aufnahme stoppen"):
         state.video_active = False
         append_log(state, "🛑 Aufnahme gestoppt")
 
     if state.video_frames:
+        st.caption(f"Gespeicherte Frames: {len(state.video_frames)} / {MAX_VIDEO_FRAMES}")
+        if len(state.video_frames) >= MAX_VIDEO_FRAMES:
+            st.warning("Frame-Limit erreicht – ältere Frames wurden überschrieben.")
         if st.button("Video exportieren"):
             try:
                 fmt, payload = build_video_from_frames(
@@ -838,7 +890,10 @@ def page_recording(state: AppState) -> None:
                 st.download_button(
                     "Download Video",
                     data=payload,
-                    file_name=state.video_params.get("filename", f"run.{fmt}"),
+                    file_name=state.video_params.get(
+                        "filename",
+                        f"{state.cfg.objective}_seed{state.cfg.seed}_{stamp}.{fmt}",
+                    ),
                     mime=f"video/{fmt}",
                 )
             except Exception as exc:
@@ -846,7 +901,12 @@ def page_recording(state: AppState) -> None:
 
     st.markdown("### Artefakte")
     cfg_json = json.dumps(config_to_nested(state.cfg), indent=2)
-    st.download_button("Config exportieren (JSON)", data=cfg_json, file_name="config_snapshot.json", mime="application/json")
+    st.download_button(
+        "Config exportieren (JSON)",
+        data=cfg_json,
+        file_name=f"{state.cfg.objective}_seed{state.cfg.seed}_{stamp}_config.json",
+        mime="application/json",
+    )
 
     if state.controller and state.controller.best_history:
         history = state.controller.best_history
@@ -854,7 +914,12 @@ def page_recording(state: AppState) -> None:
         for it, val, pos in history:
             lines.append(f"{it},{val},{pos[0]},{pos[1]}")
         csv_payload = "\n".join(lines)
-        st.download_button("Best-Trajectory (CSV)", data=csv_payload, file_name="best_trajectory.csv", mime="text/csv")
+        st.download_button(
+            "Best-Trajectory (CSV)",
+            data=csv_payload,
+            file_name=f"{state.cfg.objective}_seed{state.cfg.seed}_{stamp}_trajectory.csv",
+            mime="text/csv",
+        )
 
     if state.video_frames:
         if st.button("Heatmap-Snapshots exportieren (ZIP)"):
@@ -867,13 +932,18 @@ def page_recording(state: AppState) -> None:
             st.download_button(
                 "Download Snapshots",
                 data=zip_buf.getvalue(),
-                file_name="heatmap_snapshots.zip",
+                file_name=f"{state.cfg.objective}_seed{state.cfg.seed}_{stamp}_snapshots.zip",
                 mime="application/zip",
             )
 
     if state.logs:
         log_payload = "\n".join(state.logs)
-        st.download_button("Log exportieren (TXT)", data=log_payload, file_name="run_log.txt", mime="text/plain")
+        st.download_button(
+            "Log exportieren (TXT)",
+            data=log_payload,
+            file_name=f"{state.cfg.objective}_seed{state.cfg.seed}_{stamp}_log.txt",
+            mime="text/plain",
+        )
 
     st.markdown("### Hinweise")
     st.info(
@@ -900,22 +970,56 @@ def parse_numeric_list(text: str) -> list[float]:
     return items
 
 
+def apply_config_value(cfg: HPIOConfig, key: str, value: float) -> None:
+    if key.startswith("field."):
+        _, attr = key.split(".", 1)
+        target = cfg.field
+    elif key.startswith("agent."):
+        _, attr = key.split(".", 1)
+        target = cfg.agent
+    else:
+        attr = key
+        target = cfg
+
+    if not hasattr(target, attr):
+        raise AttributeError(f"Unbekannter Parameter: {key}")
+
+    current = getattr(target, attr)
+    if isinstance(current, bool):
+        coerced: Any = bool(value)
+    elif isinstance(current, int):
+        coerced = int(value)
+    else:
+        coerced = float(value)
+    setattr(target, attr, coerced)
+
+
 def run_experiment(cfg: HPIOConfig, seeds: list[int]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for seed in seeds:
         exp_cfg = nested_to_config(config_to_nested(cfg))
         exp_cfg.seed = int(seed)
-        opt = HPIO(exp_cfg)
-        pos, val = opt.run()
-        results.append(
-            {
-                "seed": seed,
-                "best_val": float(val),
-                "best_pos_x": float(pos[0]),
-                "best_pos_y": float(pos[1]),
-                "iters": opt.cfg.iters,
-            }
-        )
+        try:
+            opt = HPIO(exp_cfg)
+            pos, val = opt.run()
+            results.append(
+                {
+                    "seed": int(seed),
+                    "best_val": float(val),
+                    "best_pos_x": float(pos[0]),
+                    "best_pos_y": float(pos[1]),
+                    "iters": opt.cfg.iters,
+                    "config": config_to_nested(exp_cfg),
+                }
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "seed": int(seed),
+                    "error": str(exc),
+                    "config": config_to_nested(exp_cfg),
+                }
+            )
     return results
 
 
@@ -925,25 +1029,59 @@ def run_parameter_grid(cfg: HPIOConfig, grid: dict[str, list[float]]) -> list[di
     results: list[dict[str, Any]] = []
     for values in combos:
         exp_cfg = nested_to_config(config_to_nested(cfg))
-        for key, value in zip(keys, values):
-            if key.startswith("field."):
-                _, attr = key.split(".", 1)
-                setattr(exp_cfg.field, attr, value)
-            elif key.startswith("agent."):
-                _, attr = key.split(".", 1)
-                setattr(exp_cfg.agent, attr, value)
-            else:
-                setattr(exp_cfg, key, value)
-        opt = HPIO(exp_cfg)
-        pos, val = opt.run()
-        results.append(
-            {
-                "param_combo": {k: v for k, v in zip(keys, values)},
-                "best_val": float(val),
-                "best_pos_x": float(pos[0]),
-                "best_pos_y": float(pos[1]),
-            }
-        )
+        combo = {k: v for k, v in zip(keys, values)}
+        try:
+            for key, value in combo.items():
+                apply_config_value(exp_cfg, key, value)
+            opt = HPIO(exp_cfg)
+            pos, val = opt.run()
+            results.append(
+                {
+                    "param_combo": dict(combo),
+                    "best_val": float(val),
+                    "best_pos_x": float(pos[0]),
+                    "best_pos_y": float(pos[1]),
+                    "config": config_to_nested(exp_cfg),
+                }
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "param_combo": dict(combo),
+                    "error": str(exc),
+                    "config": config_to_nested(exp_cfg),
+                }
+            )
+    return results
+
+
+def run_parameter_table(cfg: HPIOConfig, rows: list[dict[str, float]]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        exp_cfg = nested_to_config(config_to_nested(cfg))
+        combo = dict(row)
+        try:
+            for key, value in combo.items():
+                apply_config_value(exp_cfg, key, value)
+            opt = HPIO(exp_cfg)
+            pos, val = opt.run()
+            results.append(
+                {
+                    "param_combo": combo,
+                    "best_val": float(val),
+                    "best_pos_x": float(pos[0]),
+                    "best_pos_y": float(pos[1]),
+                    "config": config_to_nested(exp_cfg),
+                }
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "param_combo": combo,
+                    "error": str(exc),
+                    "config": config_to_nested(exp_cfg),
+                }
+            )
     return results
 
 
@@ -984,21 +1122,32 @@ def page_experiments(state: AppState) -> None:
             rng = np.random.default_rng(cfg.seed)
             with st.spinner("Presets werden verglichen..."):
                 for name in selected:
-                    preset_cfg = presets[name]
+                    preset_cfg = nested_to_config(config_to_nested(presets[name]))
                     for _ in range(int(runs_per_preset)):
                         seed = int(rng.integers(0, 2**32 - 1))
                         preset_cfg.seed = seed
-                        opt = HPIO(preset_cfg)
-                        pos, val = opt.run()
-                        results.append(
-                            {
-                                "preset": name,
-                                "seed": seed,
-                                "best_val": float(val),
-                                "best_pos_x": float(pos[0]),
-                                "best_pos_y": float(pos[1]),
-                            }
-                        )
+                        try:
+                            opt = HPIO(preset_cfg)
+                            pos, val = opt.run()
+                            results.append(
+                                {
+                                    "preset": name,
+                                    "seed": seed,
+                                    "best_val": float(val),
+                                    "best_pos_x": float(pos[0]),
+                                    "best_pos_y": float(pos[1]),
+                                    "config": config_to_nested(preset_cfg),
+                                }
+                            )
+                        except Exception as exc:
+                            results.append(
+                                {
+                                    "preset": name,
+                                    "seed": seed,
+                                    "error": str(exc),
+                                    "config": config_to_nested(preset_cfg),
+                                }
+                            )
             state.experiment_results["presets"] = results
             st.success("Preset-Vergleich abgeschlossen")
         if "presets" in state.experiment_results:
@@ -1008,19 +1157,42 @@ def page_experiments(state: AppState) -> None:
         param_key = st.text_input("Parameter-Key (z.B. field.relax_alpha)", value="field.relax_alpha")
         values_text = st.text_input("Werte (Komma-Liste)", value="0.24,0.26,0.28")
         w_phase_text = st.text_input("Weitere Parameter (key=value;...)", value="w_phase=0.4;w_intensity=1.0")
+        uploaded_csv = st.file_uploader("Parameter-CSV (optional)", type="csv", key="param_csv")
         if st.button("Parameter-Raster ausführen"):
             try:
-                grid_values = parse_numeric_list(values_text)
-                extra_grid: dict[str, list[float]] = {param_key: grid_values}
-                if w_phase_text.strip():
-                    for part in w_phase_text.split(";"):
-                        part = part.strip()
-                        if not part:
-                            continue
-                        key, value_list = part.split("=")
-                        extra_grid[key.strip()] = parse_numeric_list(value_list)
-                with st.spinner("Parameter-Raster läuft..."):
-                    results = run_parameter_grid(cfg, extra_grid)
+                if uploaded_csv is not None:
+                    csv_text = uploaded_csv.getvalue().decode("utf-8")
+                    reader = csv.DictReader(io.StringIO(csv_text))
+                    rows: list[dict[str, float]] = []
+                    for row in reader:
+                        parsed_row: dict[str, float] = {}
+                        for key, value in row.items():
+                            if value is None or not value.strip():
+                                continue
+                            try:
+                                parsed_row[key.strip()] = float(value)
+                            except ValueError as exc:
+                                raise ValueError(
+                                    f"Ungültiger Wert '{value}' in Spalte '{key}'"
+                                ) from exc
+                        if parsed_row:
+                            rows.append(parsed_row)
+                    if not rows:
+                        raise ValueError("CSV enthält keine gültigen Parameterzeilen.")
+                    with st.spinner("Parameter-Tabelle läuft..."):
+                        results = run_parameter_table(cfg, rows)
+                else:
+                    grid_values = parse_numeric_list(values_text)
+                    extra_grid: dict[str, list[float]] = {param_key: grid_values}
+                    if w_phase_text.strip():
+                        for part in w_phase_text.split(";"):
+                            part = part.strip()
+                            if not part:
+                                continue
+                            key, value_list = part.split("=")
+                            extra_grid[key.strip()] = parse_numeric_list(value_list)
+                    with st.spinner("Parameter-Raster läuft..."):
+                        results = run_parameter_grid(cfg, extra_grid)
                 state.experiment_results["grid"] = results
                 st.success("Parameter-Raster abgeschlossen")
             except Exception as exc:
@@ -1031,7 +1203,13 @@ def page_experiments(state: AppState) -> None:
     if state.experiment_results:
         st.markdown("### Export & Visualisierung")
         combined = json.dumps(state.experiment_results, indent=2)
-        st.download_button("Resultate als JSON", data=combined, file_name="experiments.json", mime="application/json")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        st.download_button(
+            "Resultate als JSON",
+            data=combined,
+            file_name=f"{state.cfg.objective}_experiments_{stamp}.json",
+            mime="application/json",
+        )
 
 
 # ---------------------------------------------------------------------------
