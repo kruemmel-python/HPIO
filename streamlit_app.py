@@ -375,8 +375,13 @@ def execute_step(state: AppState) -> None:
     state._trails = trails
 
     should_render = (result.iteration % state.viz_every) == 0 or not state.last_plot_png
+    video_freq = int(state.video_params.get("viz_freq", state.viz_every) or state.viz_every)
+    video_freq = max(1, video_freq)
+    capture_frame = state.video_active and (result.iteration % video_freq == 0)
+
+    frame_png: Optional[bytes] = None
     if should_render:
-        state.last_plot_png = render_heatmap(
+        frame_png = render_heatmap(
             result.field_phi,
             result.agents_grid,
             trails,
@@ -385,16 +390,28 @@ def execute_step(state: AppState) -> None:
             state.overlay,
             state.trail_length,
         )
-        if state.video_active and state.last_plot_png:
-            video_freq = int(state.video_params.get("viz_freq", state.viz_every) or state.viz_every)
-            video_freq = max(1, video_freq)
-            if result.iteration % video_freq == 0:
-                if len(state.video_frames) >= MAX_VIDEO_FRAMES:
-                    if not state.video_limit_notified:
-                        append_log(state, "⚠️ Frame-Limit erreicht – älteste Frames werden überschrieben.")
-                        state.video_limit_notified = True
-                    state.video_frames.pop(0)
-                state.video_frames.append((result.iteration, state.last_plot_png))
+        state.last_plot_png = frame_png
+    elif capture_frame:
+        frame_png = render_heatmap(
+            result.field_phi,
+            result.agents_grid,
+            trails,
+            result.iteration,
+            result.best_val,
+            state.overlay,
+            state.trail_length,
+        )
+        state.last_plot_png = frame_png
+
+    if capture_frame:
+        frame_bytes = frame_png if frame_png is not None else state.last_plot_png
+        if frame_bytes:
+            if len(state.video_frames) >= MAX_VIDEO_FRAMES:
+                if not state.video_limit_notified:
+                    append_log(state, "⚠️ Frame-Limit erreicht – älteste Frames werden überschrieben.")
+                    state.video_limit_notified = True
+                state.video_frames.pop(0)
+            state.video_frames.append((result.iteration, frame_bytes))
 
 
 def render_status_box(result: Optional[StepResult], state: AppState) -> None:
