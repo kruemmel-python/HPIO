@@ -369,6 +369,7 @@ def format_bytes(num_bytes: int) -> str:
 def execute_step(state: AppState) -> None:
     if state.controller is None:
         return
+    ensure_video_defaults(state)
     result = state.controller.step()
     if result is None:
         state.running = False
@@ -770,10 +771,6 @@ def page_run(state: AppState) -> None:
             else:
                 st.info("Keine Änderungen erkannt.")
 
-    if state.running and not state.paused:
-        ensure_controller(state)
-        execute_step(state)
-
     left, right = st.columns([2.5, 1.5])
     with left:
         st.markdown("### Heatmap & Agents")
@@ -800,12 +797,7 @@ def page_run(state: AppState) -> None:
         col_metrics[1].metric("Δ Best", f"{improvement:+.3e}")
         col_metrics[2].metric("Iterationen", int(latest["iteration"]))
 
-    if state.running and not state.paused:
-        delay = 0.01
-        if state.fps > 60.0:
-            delay = 0.03
-        time.sleep(delay)
-        trigger_rerun()
+    # page_run no longer drives the execution loop; this is handled globally in main().
 
 
 # ---------------------------------------------------------------------------
@@ -1792,6 +1784,10 @@ def main() -> None:
     st.set_page_config(page_title="HPIO Control Center", layout="wide")
     state = get_state()
 
+    if state.running and not state.paused:
+        ensure_controller(state)
+        execute_step(state)
+
     pages = {
         "Start / Run": page_run,
         "Parameter": page_parameters,
@@ -1804,6 +1800,13 @@ def main() -> None:
     page_name = st.sidebar.radio("Seite wählen", list(pages.keys()))
 
     pages[page_name](state)
+
+    if state.running and not state.paused:
+        delay = 0.01
+        if state.fps > 60.0:
+            delay = 0.03
+        time.sleep(delay)
+        trigger_rerun()
 
 
 if __name__ == "__main__":
