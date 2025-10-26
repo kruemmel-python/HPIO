@@ -1,0 +1,888 @@
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Technical Documentation</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --sidebar-bg: #1e293b;
+            --text-color: #e2e8f0;
+            --link-color: #38bdf8;
+            --link-hover: #7dd3fc;
+            --border-color: #334155;
+            --h2-color: #67e8f9;
+            --h3-color: #a5f3fc;
+            --code-bg: #1e293b;
+        }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            margin: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .sidebar {
+            width: 300px;
+            flex-shrink: 0;
+            background-color: var(--sidebar-bg);
+            border-right: 1px solid var(--border-color);
+            height: 100vh;
+            overflow-y: auto;
+            padding: 1.5rem;
+            box-sizing: border-box;
+        }
+        .sidebar h1 {
+            font-size: 1.25rem;
+            margin-top: 0;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .sidebar ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .sidebar li a {
+            display: block;
+            padding: 0.5rem 0;
+            color: var(--link-color);
+            text-decoration: none;
+            font-size: 0.875rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            transition: color 0.2s;
+        }
+        .sidebar li a:hover {
+            color: var(--link-hover);
+        }
+        .main-content {
+            flex-grow: 1;
+            height: 100vh;
+            overflow-y: auto;
+            padding: 2rem 3rem;
+            box-sizing: border-box;
+        }
+        section {
+            padding-top: 2rem;
+            margin-top: -2rem;
+            margin-bottom: 3rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+        section:last-child {
+            border-bottom: none;
+        }
+        h2 {
+            font-size: 1.75rem;
+            color: var(--h2-color);
+            font-family: monospace;
+        }
+        h3 {
+            font-size: 1.25rem;
+            color: var(--h3-color);
+            margin-top: 2rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+        }
+        p { line-height: 1.6; }
+        code {
+            background-color: var(--code-bg);
+            padding: 0.2em 0.4em;
+            margin: 0;
+            font-size: 85%;
+            border-radius: 6px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+        pre {
+            background-color: var(--code-bg);
+            padding: 1rem;
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+        pre code {
+            padding: 0;
+            background: none;
+            font-size: 100%;
+        }
+        .error {
+            color: #f87171;
+            background-color: #450a0a;
+            border: 1px solid #7f1d1d;
+            padding: 1rem;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <aside class="sidebar">
+        <h1>Project Files</h1>
+        <ul>
+            <li><a href="#hpio.py">hpio.py</a></li><li><a href="#hpio_record.py">hpio_record.py</a></li><li><a href="#streamlit_app.py">streamlit_app.py</a></li>
+        </ul>
+    </aside>
+    <main class="main-content">
+        <section id="hpio.py">
+    <h2>hpio.py</h2>
+
+    <p>
+        Dieses Modul implementiert den Kern des HPIO-Optimierungsalgorithmus (Hybrid Particle-Inspired Optimization)
+        sowie verschiedene Hilfsfunktionen, Konfigurations-Dataclasses und alternative Optimierungsalgorithmen
+        wie Differential Evolution, Partikel-Schwarm-Optimierung und Genetische Algorithmen.
+        Es definiert die Struktur für Agenten, das Feld, in dem sie interagieren, und die Logik für die
+        Optimierung von Zielfunktionen.
+    </p>
+
+    <h3>Typ-Aliase</h3>
+    <ul>
+        <li>
+            <p><code>AlgorithmName</code></p>
+            <p>Ein Literal-Typ, der die Namen der unterstützten Optimierungsalgorithmen darstellt.</p>
+            <ul>
+                <li>Mögliche Werte: <code>"hpio"</code>, <code>"de"</code> (Differential Evolution), <code>"pso"</code> (Particle Swarm Optimization), <code>"ga"</code> (Genetic Algorithm)</li>
+            </ul>
+        </li>
+        <li>
+            <p><code>ObjectiveName</code></p>
+            <p>Ein Literal-Typ, der die Namen der unterstützten Zielfunktionen darstellt.</p>
+            <ul>
+                <li>Mögliche Werte: <code>"rastrigin"</code>, <code>"ackley"</code>, <code>"himmelblau"</code></li>
+            </ul>
+        </li>
+    </ul>
+
+    <h3>Konfigurations-Dataclasses</h3>
+
+    <h4><code>@dataclass class FieldParams</code></h4>
+    <p>Definiert Parameter für das Feld, in dem die Agenten interagieren.</p>
+    <ul>
+        <li><code>grid_size: tuple[int, int] = (160, 160)</code>: Die Größe des Feldes als (Breite, Höhe) in Pixeln.</li>
+        <li><code>relax_alpha: float = 0.25</code>: Der Relaxationsfaktor für die Feldaktualisierung.</li>
+        <li><code>evap: float = 0.04</code>: Die Verdampfungsrate des Feldes pro Iteration.</li>
+        <li><code>kernel_sigma: float = 1.6</code>: Die Standardabweichung (Sigma) des Gaußschen Kernels für die Feldglättung.</li>
+    </ul>
+
+    <h4><code>@dataclass class AgentParams</code></h4>
+    <p>Definiert Parameter für die Agenten, die sich im Feld bewegen.</p>
+    <ul>
+        <li><code>count: int = 64</code>: Die Anzahl der Agenten.</li>
+        <li><code>step: float = 0.35</code>: Die Schrittgröße der Agenten.</li>
+        <li><code>curiosity: float = 0.45</code>: Der Neugier-Faktor, der zufällige Bewegungen beeinflusst.</li>
+        <li><code>momentum: float = 0.65</code>: Der Impuls-Faktor für die Agentenbewegung.</li>
+        <li><code>deposit_sigma: float = 1.6</code>: Breite der Feldablage in Grid-Pixeln (σ). <code>0</code> bedeutet Punktablage.</li>
+        <li><code>coherence_gain: float = 0.0</code>: Kohärenz in Richtung des globalen Bestwerts (0..~1). <code>0</code> bedeutet ausgeschaltet.</li>
+    </ul>
+
+    <h4><code>@dataclass class HPIOConfig</code></h4>
+    <p>Die Hauptkonfigurationsklasse für den HPIO-Algorithmus.</p>
+    <ul>
+        <li><code>objective: ObjectiveName</code>: Die zu optimierende Zielfunktion.</li>
+        <li><code>algorithm: AlgorithmName = "hpio"</code>: Der zu verwendende Algorithmus (Standard: HPIO).</li>
+        <li><code>iters: int = 420</code>: Die maximale Anzahl der Iterationen.</li>
+        <li><code>seed: int = 123</code>: Der Seed für den Zufallszahlengenerator.</li>
+        <li><code>use_gpu: bool = False</code>: Flag, ob die GPU verwendet werden soll (aktuell nicht implementiert).</li>
+        <li><code>visualize: bool = False</code>: Flag, ob eine Visualisierung erfolgen soll (aktuell nicht implementiert).</li>
+        <li><code>bounds: tuple[tuple[float, float], tuple[float, float]] = ((-5.5, 5.5), (-5.5, 5.5))</code>: Die Suchgrenzen für die x- und y-Achse.</li>
+        <li><code>report_every: int = 20</code>: Intervall für das Reporting des Fortschritts.</li>
+        <li><code>anneal_step_from: float = 1.0</code>: Startwert für die Annealing der Schrittgröße.</li>
+        <li><code>anneal_step_to: float = 0.2</code>: Endwert für die Annealing der Schrittgröße.</li>
+        <li><code>anneal_curiosity_from: float = 1.0</code>: Startwert für die Annealing des Neugier-Faktors.</li>
+        <li><code>anneal_curiosity_to: float = 0.25</code>: Endwert für die Annealing des Neugier-Faktors.</li>
+        <li><code>early_patience: int = 90</code>: Anzahl der Iterationen ohne Verbesserung, bevor Early Stopping eintritt.</li>
+        <li><code>early_tol: float = 1e-4</code>: Toleranzschwelle für die Erkennung einer Verbesserung beim Early Stopping.</li>
+        <li><code>polish_h: float = 1e-3</code>: Schrittgröße für die lokale quadratische Politur des besten Ergebnisses.</li>
+        <li><code>w_intensity: float = 1.0</code>: Gewicht für den Intensitätsanteil der Ablage.</li>
+        <li><code>w_phase: float = 0.0</code>: Gewicht für den Phasenanteil der Ablage.</li>
+        <li><code>phase_span_pi: float = 2.0</code>: Phasen-Spannweite in Einheiten von π (z. B. 2.4 → 2.4π).</li>
+        <li><code>field: FieldParams = dc.field(default_factory=FieldParams)</code>: Parameter für das Feld.</li>
+        <li><code>agent: AgentParams = dc.field(default_factory=AgentParams)</code>: Parameter für die Agenten.</li>
+    </ul>
+
+    <h3>Zielfunktionen</h3>
+
+    <h4><code>def rastrigin_fn(x: np.ndarray) -> float</code></h4>
+    <p>Implementiert die Rastrigin-Zielfunktion, eine nicht-konvexe Funktion, die häufig zur Leistungsbewertung von Optimierungsalgorithmen verwendet wird.</p>
+    <ul>
+        <li><strong>Parameter:</strong>
+            <ul>
+                <li><code>x</code> (<code>np.ndarray</code>): Ein 2D-Array von Koordinaten <code>[x1, x2]</code>.</li>
+            </ul>
+        </li>
+        <li><strong>Rückgabe:</strong>
+            <ul>
+                <li><code>float</code>: Der Funktionswert an der gegebenen Position.</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h4><code>def ackley_fn(x: np.ndarray) -> float</code></h4>
+    <p>Implementiert die Ackley-Zielfunktion, eine weitere nicht-konvexe Funktion mit vielen lokalen Minima.</p>
+    <ul>
+        <li><strong>Parameter:</strong>
+            <ul>
+                <li><code>x</code> (<code>np.ndarray</code>): Ein 2D-Array von Koordinaten <code>[x1, x2]</code>.</li>
+            </ul>
+        </li>
+        <li><strong>Rückgabe:</strong>
+            <ul>
+                <li><code>float</code>: Der Funktionswert an der gegebenen Position.</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h4><code>def himmelblau_fn(x: np.ndarray) -> float</code></h4>
+    <p>Implementiert die Himmelblau-Zielfunktion, eine multimodale Funktion mit vier bekannten globalen Minima.</p>
+    <ul>
+        <li><strong>Parameter:</strong>
+            <ul>
+                <li><code>x</code> (<code>np.ndarray</code>): Ein 2D-Array von Koordinaten <code>[x1, x2]</code>.</li>
+            </ul>
+        </li>
+        <li><strong>Rückgabe:</strong>
+            <ul>
+                <li><code>float</code>: Der Funktionswert an der gegebenen Position.</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h4><code>OBJECTIVES: dict[ObjectiveName, Callable[[np.ndarray], float]]</code></h4>
+    <p>Ein Dictionary, das die Namen der Zielfunktionen ihren jeweiligen Implementierungen zuordnet.</p>
+
+    <h3>Hilfsfunktionen</h3>
+
+    <h4><code>def _gaussian_kernel_1d(sigma: float) -> np.ndarray</code></h4>
+    <p>Erzeugt einen 1D-Gaußschen Kernel für die Faltung.</p>
+    <ul>
+        <li><strong>Parameter:</strong>
+            <ul>
+                <li><code>sigma</code> (<code>float</code>): Die Standardabweichung des Gaußschen Kernels.</li>
+            </ul>
+        </li>
+        <li><strong>Rückgabe:</strong>
+            <ul>
+                <li><code>np.ndarray</code>: Der normalisierte 1D-Gaußsche Kernel.</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h4><code>def _apply_conv1d(arr: np.ndarray, kernel: np.ndarray, axis: int) -> np.ndarray</code></h4>
+    <p>Wendet einen 1D-Faltungskernel entlang einer bestimmten Achse eines 2D-Arrays an.</p>
+    <ul>
+        <li><strong>Parameter:</strong>
+            <ul>
+                <li><code>arr</code> (<code>np.ndarray</code>): Das Eingabearray.</li>
+                <li><code>kernel</code> (<code>np.ndarray</code>): Der 1D-Faltungskernel.</li>
+                <li><code>axis</code> (<code>int</code>): Die Achse, entlang der die Faltung angewendet werden soll.</li>
+            </ul>
+        </li>
+        <li><strong>Rückgabe:</strong>
+            <ul>
+                <li><code>np.ndarray</code>: Das gefaltete Array.</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h4><code>def _stamp_gaussian(grid: np.ndarray, cx: int, cy: int, sigma: float, amount: float) -> None</code></h4>
+    <p>Addiert einen 2D-Gaußschen Stempel um die Koordinaten (cx, cy) zu einem Gitter. Die Summe der Maske wird auf 'amount' normiert.</p>
+    <ul>
+        <li><strong>Parameter:</strong>
+            <ul>
+                <li><code>grid</code> (<code>np.ndarray</code>): Das 2D-Gitter, zu dem der Gaußsche Stempel hinzugefügt werden soll.</li>
+                <li><code>cx</code> (<code>int</code>): Die x-Koordinate des Zentrums des Stempels.</li>
+                <li><code>cy</code> (<code>int</code>): Die y-Koordinate des Zentrums des Stempels.</li>
+                <li><code>sigma</code> (<code>float</code>): Die Standardabweichung des Gaußschen Stempels in Pixeln.</li>
+                <li><code>amount</code> (<code>float</code>): Der Gesamtbetrag, der durch den Gaußschen Stempel hinzugefügt werden soll.</li>
+            </ul>
+        </li>
+        <li><strong>Rückgabe:</strong>
+            <ul>
+                <li><code>None</code></li>
+            </ul>
+        </li>
+    </ul>
+
+    <h3>Feld- und Agentenimplementierung</h3>
+
+    <h4><code>@dataclass class AgentState</code></h4>
+    <p>Repräsentiert den Zustand eines einzelnen Agenten.</p>
+    <ul>
+        <li><code>pos: np.ndarray</code>: Die aktuelle Position des Agenten.</li>
+        <li><code>vel: np.ndarray</code>: Die aktuelle Geschwindigkeit des Agenten.</li>
+        <li><code>best_pos: np.ndarray</code>: Die beste Position, die der Agent bisher gefunden hat.</li>
+        <li><code>best_val: float</code>: Der Funktionswert an der besten Position des Agenten.</li>
+    </ul>
+
+    <h4><code>class Field</code></h4>
+    <p>Verwaltet das 2D-Feld, in dem die Agenten Ablagerungen vornehmen und Gradienten abtasten.</p>
+    <ul>
+        <li><strong>Konstruktor:</strong>
+            <ul>
+                <li><code>__init__(self, params: FieldParams, bounds: tuple[Tuple[float, float], Tuple[float, float]])</code>
+                    <p>Initialisiert das Feld mit den gegebenen Parametern und Suchgrenzen.</p>
+                    <ul>
+                        <li><code>params</code> (<code>FieldParams</code>): Die Feldparameter.</li>
+                        <li><code>bounds</code> (<code>tuple[Tuple[float, float], Tuple[float, float]]</code>): Die Suchgrenzen des Problems.</li>
+                    </ul>
+                </li>
+            </ul>
+        </li>
+        <li><strong>Methoden:</strong>
+            <ul>
+                <li><code>world_to_grid(self, pos: np.ndarray) -> tuple[int, int]</code>
+                    <p>Konvertiert Weltkoordinaten in Gitterkoordinaten (ganzzahlig).</p>
+                </li>
+                <li><code>world_to_grid_float(self, pos: np.ndarray) -> tuple[float, float]</code>
+                    <p>Konvertiert Weltkoordinaten in Gitterkoordinaten (Fließkomma).</p>
+                </li>
+                <li><code>_grid_xf(self, x: float) -> float</code>
+                    <p>Interne Methode zur Konvertierung einer Welt-x-Koordinate in eine Gitter-x-Koordinate (Fließkomma).</p>
+                </li>
+                <li><code>_grid_yf(self, y: float) -> float</code>
+                    <p>Interne Methode zur Konvertierung einer Welt-y-Koordinate in eine Gitter-y-Koordinate (Fließkomma).</p>
+                </li>
+                <li><code>_grid_x(self, x: float) -> int</code>
+                    <p>Interne Methode zur Konvertierung einer Welt-x-Koordinate in eine Gitter-x-Koordinate (ganzzahlig).</p>
+                </li>
+                <li><code>_grid_y(self, y: float) -> int</code>
+                    <p>Interne Methode zur Konvertierung einer Welt-y-Koordinate in eine Gitter-y-Koordinate (ganzzahlig).</p>
+                </li>
+                <li><code>deposit(self, pos: np.ndarray, amount: float, sigma_px: float = 0.0) -> None</code>
+                    <p>Nimmt eine Ablage im Feld vor. Wenn <code>sigma_px > 0</code>, wird ein 2D-Gauss-Stempel verwendet, sonst eine Punktablage.</p>
+                    <ul>
+                        <li><code>pos</code> (<code>np.ndarray</code>): Die Weltkoordinaten der Ablage.</li>
+                        <li><code>amount</code> (<code>float</code>): Der Betrag der Ablage.</li>
+                        <li><code>sigma_px</code> (<code>float</code>): Die Standardabweichung des Gaußschen Stempels in Pixeln.</li>
+                    </ul>
+                </li>
+                <li><code>sample_gradient(self, pos: np.ndarray) -> np.ndarray</code>
+                    <p>Abtasten des Gradienten des Feldes an einer gegebenen Weltposition.</p>
+                    <ul>
+                        <li><code>pos</code> (<code>np.ndarray</code>): Die Weltkoordinaten, an denen der Gradient abgetastet werden soll.</li>
+                    </ul>
+                    <ul>
+                        <li><code>np.ndarray</code>: Der 2D-Gradientenvektor.</li>
+                    </ul>
+                </li>
+                <li><code>relax(self) -> None</code>
+                    <p>Führt einen Relaxationsschritt auf dem Feld durch, der Glättung und Verdampfung beinhaltet.</p>
+                </li>
+            </ul>
+        </li>
+    </ul>
+
+    <h3>Optimierer</h3>
+
+    <h4><code>class HPIO</code></h4>
+    <p>Implementiert den Hybrid Particle-Inspired Optimization (HPIO) Algorithmus.</p>
+    <ul>
+        <li><strong>Konstruktor:</strong>
+            <ul>
+                <li><code>__init__(self, cfg: HPIOConfig)</code>
+                    <p>Initialisiert den HPIO-Optimierer mit der gegebenen Konfiguration.</p>
+                    <ul>
+                        <li><code>cfg</code> (<code>HPIOConfig</code>): Die Konfiguration für den HPIO-Algorithmus.</li>
+                    </ul>
+                </li>
+            </ul>
+        </li>
+        <li><strong>Methoden:</strong>
+            <ul>
+                <li><code>_init_agents(self) -> None</code>
+                    <p>Initialisiert die Agenten mit zufälligen Positionen innerhalb der Suchgrenzen.</p>
+                </li>
+                <li><code>_clip_position(self, pos: np.ndarray) -> np.ndarray</code>
+                    <p>Beschneidet die Position eines Agenten, um sicherzustellen, dass sie innerhalb der Suchgrenzen bleibt.</p>
+                </li>
+                <li><code>_deposit_from_agent(self, agent: AgentState, amplitude: float) -> None</code>
+                    <p>Nimmt eine Ablage im Feld vor, basierend auf dem besten Wert des Agenten und optional einer Phasenmodulation.</p>
+                    <p>Ablage kombiniert Intensitäts- und (optional) Phasenanteil.</p>
+                    <ul>
+                        <li>Intensität: 1/(1+best_val) → bessere Agenten legen stärker ab.</li>
+                        <li>Phase: leichte Modulation anhand Bewegungsrichtung (sinusförmig), skaliert über phase_span_pi und w_phase.</li>
+                    </ul>
+<section id="hpio_record.py">
+    <h2>hpio_record.py</h2>
+    <p>
+        Dieses Modul, <code>hpio_record.py</code>, ist für die Videoaufzeichnung (MP4/MKV) der HPIO-Optimierung (Hybrid Particle-Swarm Optimization) konzipiert. Es bietet eine robuste Implementierung, die die lokale <code>hpio.py</code>-Datei explizit lädt, Komposition anstelle von Vererbung nutzt und die HPIO.run-Schleife nachbildet, um Frames pro Iteration zu rendern.
+    </p>
+    <p>
+        <strong>Aufrufbeispiele:</strong>
+    </p>
+    <ul>
+        <li><code>python hpio_record.py rastrigin --video runs/rastrigin.mp4 --fps 30 --size 1280x720</code></li>
+        <li><code>python hpio_record.py ackley --gpu --video runs/ackley_gpu.mkv --fps 24 --size 1600x900</code></li>
+        <li><code>python hpio_record.py himmelblau --video runs/himmelblau.mp4 --viz-freq 2</code></li>
+    </ul>
+
+    <h3>Typ-Aliase</h3>
+    <ul>
+        <li>
+            <p><code>ObjectiveName</code></p>
+            <p>Ein Literal-Typ, der die unterstützten Zielfunktionen definiert.</p>
+            <ul>
+                <li><strong>Typ:</strong> <code>Literal["rastrigin", "ackley", "himmelblau"]</code></li>
+            </ul>
+        </li>
+    </ul>
+
+    <h3>Funktionen</h3>
+    <ul>
+        <li>
+            <p><code>load_local_hpio()</code></p>
+            <p>Lädt die lokale <code>hpio.py</code>-Datei aus demselben Verzeichnis dynamisch als Modul. Dies stellt sicher, dass die korrekte Version der HPIO-Implementierung verwendet wird, auch wenn andere Versionen im Systempfad existieren.</p>
+            <ul>
+                <li><strong>Parameter:</strong> Keine.</li>
+                <li><strong>Rückgabe:</strong> Das geladene <code>hpio</code>-Modul.</li>
+                <li><strong>Fehler:</strong> Beendet das Programm, wenn <code>hpio.py</code> nicht gefunden oder nicht geladen werden kann.</li>
+            </ul>
+        </li>
+        <li>
+            <p><code>clamp(x: float, lo: float, hi: float) -> float</code></p>
+            <p>Begrenzt einen Wert <code>x</code> auf einen Bereich zwischen <code>lo</code> (Minimum) und <code>hi</code> (Maximum).</p>
+            <ul>
+                <li><strong>Parameter:</strong>
+                    <ul>
+                        <li><code>x</code> (<code>float</code>): Der zu begrenzende Wert.</li>
+                        <li><code>lo</code> (<code>float</code>): Die untere Grenze.</li>
+                        <li><code>hi</code> (<code>float</code>): Die obere Grenze.</li>
+                    </ul>
+                </li>
+                <li><strong>Rückgabe:</strong> Der begrenzte Wert.</li>
+            </ul>
+        </li>
+        <li>
+            <p><code>lerp(a: float, b: float, t: float) -> float</code></p>
+            <p>Führt eine lineare Interpolation zwischen zwei Werten <code>a</code> und <code>b</code> basierend auf dem Interpolationsfaktor <code>t</code> durch.</p>
+            <ul>
+                <li><strong>Parameter:</strong>
+                    <ul>
+                        <li><code>a</code> (<code>float</code>): Startwert.</li>
+                        <li><code>b</code> (<code>float</code>): Endwert.</li>
+                        <li><code>t</code> (<code>float</code>): Interpolationsfaktor (typischerweise zwischen 0.0 und 1.0).</li>
+                    </ul>
+                </li>
+                <li><strong>Rückgabe:</strong> Der interpolierte Wert.</li>
+            </ul>
+        </li>
+        <li>
+            <p><code>smoothstep(t: float) -> float</code></p>
+            <p>Berechnet eine Smoothstep-Funktion, die einen Wert <code>t</code> sanft von 0 auf 1 überblendet. Der Wert <code>t</code> wird intern auf den Bereich [0, 1] geklemmt.</p>
+            <ul>
+                <li><strong>Parameter:</strong>
+                    <ul>
+                        <li><code>t</code> (<code>float</code>): Der Eingabewert.</li>
+                    </ul>
+                </li>
+                <li><strong>Rückgabe:</strong> Der Smoothstep-Wert.</li>
+            </ul>
+        </li>
+        <li>
+            <p><code>parse_size(s: str) -> tuple[int, int]</code></p>
+            <p>Parst einen String der Form "WIDTHxHEIGHT" in ein Tupel von zwei Integern (Breite, Höhe).</p>
+            <ul>
+                <li><strong>Parameter:</strong>
+                    <ul>
+                        <li><code>s</code> (<code>str</code>): Der zu parsende String, z.B. "1280x720".</li>
+                    </ul>
+                </li>
+                <li><strong>Rückgabe:</strong> Ein Tupel <code>(width, height)</code>.</li>
+                <li><strong>Fehler:</strong> Löst <code>argparse.ArgumentTypeError</code> aus, wenn das Format ungültig ist.</li>
+            </ul>
+        </li>
+        <li>
+            <p><code>main()</code></p>
+            <p>Die Hauptfunktion des Skripts. Sie parst Kommandozeilenargumente, initialisiert den Video-Writer und den HPIO-Recorder, konfiguriert die HPIO-Optimierung basierend auf Argumenten und Presets, führt die Optimierung durch und speichert das Ergebnis als Video.</p>
+            <ul>
+                <li><strong>Parameter:</strong> Keine.</li>
+                <li><strong>Rückgabe:</strong> Keine.</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h3>Klassen</h3>
+    <ul>
+        <li>
+            <p><code>VideoWriter</code></p>
+            <p>Eine Klasse zum Schreiben von Videodateien. Sie versucht, FFmpeg über Matplotlib als Backend zu verwenden und fällt auf OpenCV zurück, falls FFmpeg nicht verfügbar ist.</p>
+            <h4>Konstruktor</h4>
+            <ul>
+                <li><code>__init__(self, fname: str, fps: int, width: int, height: int)</code>
+                    <ul>
+                        <li><strong>Parameter:</strong>
+                            <ul>
+                                <li><code>fname</code> (<code>str</code>): Der Dateiname des Ausgabevideos.</li>
+                                <li><code>fps</code> (<code>int</code>): Frames pro Sekunde.</li>
+                                <li><code>width</code> (<code>int</code>): Breite des Videos in Pixeln.</li>
+                                <li><code>height</code> (<code>int</code>): Höhe des Videos in Pixeln.</li>
+                            </ul>
+                        </li>
+                        <li><strong>Fehler:</strong> Löst <code>RuntimeError</code> aus, wenn kein Video-Backend verfügbar ist.</li>
+                    </ul>
+                </li>
+            </ul>
+            <h4>Eigenschaften</h4>
+            <ul>
+                <li><code>fig</code> (<code>matplotlib.figure.Figure | None</code>): Gibt die Matplotlib-Figur zurück, wenn FFmpeg als Backend verwendet wird, sonst <code>None</code>.</li>
+            </ul>
+            <h4>Methoden</h4>
+            <ul>
+                <li><code>add_frame_from_figure(self)</code>: Fügt einen Frame aus der aktuellen Matplotlib-Figur hinzu. Nur für das FFmpeg-Backend verfügbar.</li>
+                <li><code>add_frame_from_rgb(self, rgb: np.ndarray)</code>: Fügt einen Frame aus einem RGB-NumPy-Array hinzu. Nur für das OpenCV-Backend verfügbar. Konvertiert RGB zu BGR.</li>
+                <li><code>close(self)</code>: Schließt den Video-Writer und gibt Ressourcen frei.</li>
+            </ul>
+        </li>
+        <li>
+            <p><code>HPIORecorder</code></p>
+            <p>Verwaltet die Visualisierung der HPIO-Optimierung in einer Matplotlib-Figur, die in zwei Unterplots unterteilt ist: eine Heatmap des Feldes und der Agenten (links) und eine Konsole für Log-Nachrichten (rechts).</p>
+            <h4>Konstruktor</h4>
+            <ul>
+                <li><code>__init__(self, writer: VideoWriter, grid_size: tuple[int,int], text_lines: int = 28)</code>
+                    <ul>
+                        <li><strong>Parameter:</strong>
+                            <ul>
+                                <li><code>writer</code> (<code>VideoWriter</code>): Eine Instanz des VideoWriters zum Speichern der Frames.</li>
+                                <li><code>grid_size</code> (<code>tuple[int,int]</code>): Die Größe des HPIO-Feldes (Breite, Höhe).</li>
+                                <li><code>text_lines</code> (<code>int</code>): Die maximale Anzahl von Log-Zeilen, die in der Konsole angezeigt werden sollen.</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </li>
+            </ul>
+            <h4>Methoden</h4>
+            <ul>
+                <li><code>log(self, line: str)</code>: Fügt eine Log-Nachricht zur internen Liste hinzu, die dann in der Konsolenansicht angezeigt wird.</li>
+                <li><code>_update_right(self)</code>: Aktualisiert den Textinhalt des rechten Konsolen-Subplots.</li>
+                <li><code>_update_left(self, field_phi: np.ndarray, agents_px: np.ndarray, trail_subset: int = 30)</code>: Aktualisiert den linken Subplot mit der Heatmap des Feldes, den Positionen der Agenten und deren Bewegungspfaden.</li>
+                <li><code>frame(self, field_phi: np.ndarray, agents_px: np.ndarray, *, title: str | None = None)</code>: Erzeugt einen vollständigen Frame, aktualisiert beide Subplots und fügt ihn dem Video-Writer hinzu.</li>
+            </ul>
+        </li>
+        <li>
+            <p><code>RecordingRunner</code></p>
+            <p>Diese Klasse kapselt die HPIO-Optimierungsschleife und integriert den <code>HPIORecorder</code>, um den Fortschritt der Optimierung zu visualisieren und aufzuzeichnen. Sie nutzt Komposition, um die <code>hpio.HPIO</code>-Klasse zu verwenden.</p>
+            <h4>Konstruktor</h4>
+            <ul>
+                <li><code>__init__(self, cfg: "hpio.HPIOConfig", recorder: HPIORecorder, viz_every: int = 1)</code>
+                    <ul>
+                        <li><strong>Parameter:</strong>
+                            <ul>
+                                <li><code>cfg</code> (<code>hpio.HPIOConfig</code>): Die Konfiguration für die HPIO-Optimierung.</li>
+                                <li><code>recorder</code> (<code>HPIORecorder</code>): Eine Instanz des HPIORecorders zur Visualisierung.</li>
+                                <li><code>viz_every</code> (<code>int</code>): Gibt an, wie oft (jede n-te Iteration) ein Frame aufgezeichnet werden soll.</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </li>
+            </ul>
+            <h4>Methoden</h4>
+            <ul>
+                <li><code>_world_to_grid_np(self, pts: np.ndarray) -> np.ndarray</code>: Konvertiert Weltkoordinaten von Agenten in Gitterkoordinaten (Pixelpositionen) für die Visualisierung.</li>
+                <li><code>run(self) -> tuple[np.ndarray, float]</code>: Führt die HPIO-Optimierungsschleife aus, wendet Annealing an, aktualisiert das Feld und die Agenten, loggt den Fortschritt und zeichnet Frames auf. Implementiert auch Early-Stopping und einen abschließenden lokalen Polish-Schritt.</li>
+            </ul>
+        </li>
+    </ul>
+</section>
+<section id="streamlit_app.py">
+    <h2>streamlit_app.py</h2>
+    <p>
+        Diese Datei implementiert die interaktive Streamlit-Anwendung für Experimente und Visualisierungen mit dem HPIO (Hybrid Pheromone Inspired Optimizer).
+        Sie bietet Benutzeroberflächen für die Konfiguration, Ausführung, Überwachung und den Export von Optimierungsläufen sowie für den Vergleich mit anderen Algorithmen und die Durchführung von Batch-Experimenten.
+    </p>
+
+    <h3>Konstanten</h3>
+    <ul>
+        <li>
+            <code>MAX_VIDEO_FRAMES</code>:
+            <p>Die maximale Anzahl von Frames, die für die Videoaufnahme im Speicher gehalten werden, bevor die ältesten Frames überschrieben werden.</p>
+            <code>Wert: 5000</code>
+        </li>
+    </ul>
+
+    <h3>Klassen</h3>
+
+    <h4><code>StepResult</code></h4>
+    <p>
+        Ein Data-Class-Objekt, das die Ergebnisse eines einzelnen Optimierungsschritts speichert.
+    </p>
+    <ul>
+        <li><code>iteration</code>: Die aktuelle Iterationsnummer.</li>
+        <li><code>best_val</code>: Der beste gefundene Wert in dieser Iteration.</li>
+        <li><code>best_pos</code>: Die Position des besten gefundene Wertes.</li>
+        <li><code>delta_best</code>: Die Änderung des besten Wertes seit der letzten Iteration.</li>
+        <li><code>field_phi</code>: Eine Kopie des aktuellen Feldes (Phi-Werte).</li>
+        <li><code>agents_grid</code>: Die Positionen der Agenten im Grid-Koordinatensystem.</li>
+        <li><code>agents_world</code>: Die Positionen der Agenten im Welt-Koordinatensystem.</li>
+        <li><code>elapsed</code>: Die für diesen Schritt benötigte Zeit in Sekunden.</li>
+        <li><code>total_time</code>: Die gesamte Laufzeit seit Start des Controllers in Sekunden.</li>
+        <li><code>early_stop_triggered</code>: Ein boolescher Wert, der anzeigt, ob der Frühabbruch ausgelöst wurde.</li>
+    </ul>
+
+    <h4><code>HPIOController</code></h4>
+    <p>
+        Verwaltet den Lebenszyklus eines HPIO-Optimierungslaufs, einschließlich Initialisierung, Schrittausführung und Zurücksetzen.
+    </p>
+    <ul>
+        <li><code>cfg</code>: Die Konfiguration des HPIO-Optimierers (<code>HPIOConfig</code>).</li>
+        <li><code>optimizer</code>: Die Instanz des HPIO-Optimierers (wird in <code>__post_init__</code> initialisiert).</li>
+        <li><code>iteration</code>: Die aktuelle Iterationsnummer.</li>
+        <li><code>no_improve</code>: Zähler für Iterationen ohne signifikante Verbesserung.</li>
+        <li><code>last_best</code>: Der beste Wert der letzten Iteration.</li>
+        <li><code>start_ts</code>: Zeitstempel des Starts des Controllers.</li>
+        <li><code>total_time</code>: Die kumulierte Laufzeit des Optimierers.</li>
+        <li><code>best_history</code>: Eine Liste von Tupeln <code>(iteration, best_val, best_pos)</code>, die die Historie der besten Werte speichert.</li>
+    </ul>
+    <h5>Methoden:</h5>
+    <ul>
+        <li>
+            <code>__post_init__(self) -> None</code>:
+            <p>Initialisiert den HPIO-Optimierer und setzt den Startwert für <code>last_best</code> und <code>best_history</code>.</p>
+        </li>
+        <li>
+            <code>step(self) -> Optional[StepResult]</code>:
+            <p>Führt einen einzelnen Schritt des HPIO-Optimierers aus. Wendet Annealing an, bewegt Agenten, entspannt das Feld und prüft auf Frühabbruch.</p>
+            <ul>
+                <li><strong>Rückgabe:</strong> Ein <code>StepResult</code>-Objekt mit den Ergebnissen des Schritts oder <code>None</code>, wenn die maximale Iterationszahl erreicht ist.</li>
+            </ul>
+        </li>
+        <li>
+            <code>reset(self, keep_seed: bool = True) -> None</code>:
+            <p>Setzt den Optimierer auf seinen Anfangszustand zurück. Optional kann ein neuer Zufalls-Seed generiert werden.</p>
+            <ul>
+                <li><code>keep_seed</code> (bool): Wenn <code>True</code>, wird der aktuelle Seed beibehalten; andernfalls wird ein neuer Seed generiert.</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h4><code>AppState</code></h4>
+    <p>
+        Ein Data-Class-Objekt, das den gesamten Zustand der Streamlit-Anwendung speichert.
+        Es wird in <code>st.session_state</code> abgelegt, um den Zustand über Reruns hinweg zu erhalten.
+    </p>
+    <ul>
+        <li><code>cfg</code>: Die aktuelle HPIO-Konfiguration.</li>
+        <li><code>controller</code>: Die aktuelle Instanz des <code>HPIOController</code>.</li>
+        <li><code>running</code>: Boolescher Wert, ob der Optimierungslauf aktiv ist.</li>
+        <li><code>paused</code>: Boolescher Wert, ob der Optimierungslauf pausiert ist.</li>
+        <li><code>viz_every</code>: Frequenz, mit der die Visualisierung aktualisiert wird (jede n-te Iteration).</li>
+        <li><code>trail_length</code>: Länge der Agentenpfade in der Visualisierung.</li>
+        <li><code>overlay</code>: Boolescher Wert, ob Iterations- und Bestwert-Overlay in der Visualisierung angezeigt werden soll.</li>
+        <li><code>logs</code>: Eine Liste von Log-Nachrichten für die Konsole.</li>
+        <li><code>last_result</code>: Das Ergebnis des letzten <code>StepResult</code>.</li>
+        <li><code>last_plot_png</code>: Das letzte generierte Plot-Bild als PNG-Bytes.</li>
+        <li><code>fps</code>: Die aktuelle Framerate des Optimierungslaufs.</li>
+        <li><code>video_active</code>: Boolescher Wert, ob die Videoaufnahme aktiv ist.</li>
+        <li><code>video_params</code>: Ein Dictionary mit Parametern für die Videoaufnahme.</li>
+        <li><code>video_frames</code>: Eine Liste von <code>(iteration, png_bytes)</code>-Tupeln für die Videoaufnahme.</li>
+        <li><code>video_limit_notified</code>: Boolescher Wert, ob die Benachrichtigung über das Frame-Limit bereits angezeigt wurde.</li>
+        <li><code>video_last_path</code>: Der Pfad zum zuletzt gespeicherten Video.</li>
+        <li><code>video_progress_total</code>: Die erwartete Gesamtzahl der Frames für die Videoaufnahme.</li>
+        <li><code>video_summary</code>: Ein Dictionary mit einem Zusammenfassungsbericht nach dem Videoexport.</li>
+        <li><code>parameter_dirty</code>: Boolescher Wert, ob Parameter geändert wurden, die einen Reset des Controllers erfordern.</li>
+        <li><code>experiment_results</code>: Ein Dictionary zum Speichern von Ergebnissen aus Batch-Experimenten.</li>
+        <li><code>metrics_history</code>: Eine Liste von Dictionaries mit Metriken pro Iteration.</li>
+        <li><code>algorithm_runs</code>: Ein Dictionary zum Speichern von Ergebnissen aus Vergleichen mit anderen Algorithmen.</li>
+        <li><code>_trails</code>: Eine interne Liste zur Speicherung der Agentenpfade für die Visualisierung.</li>
+    </ul>
+
+    <h3>Funktionen</h3>
+
+    <h4><code>gpu_available() -> bool</code></h4>
+    <p>
+        Prüft, ob eine GPU über PyOpenCL verfügbar ist.
+    </p>
+    <ul>
+        <li><strong>Rückgabe:</strong> <code>True</code>, wenn PyOpenCL-Plattformen gefunden wurden, sonst <code>False</code>.</li>
+    </ul>
+
+    <h4><code>trigger_rerun() -> None</code></h4>
+    <p>
+        Fordert einen Rerun der Streamlit-Anwendung an, um den UI-Zustand zu aktualisieren.
+        Verwendet entweder <code>st.rerun</code> oder <code>st.experimental_rerun</code>.
+    </p>
+
+    <h4><code>get_state() -> AppState</code></h4>
+    <p>
+        Ruft den aktuellen Anwendungszustand aus <code>st.session_state</code> ab oder initialisiert ihn, falls er noch nicht existiert.
+    </p>
+    <ul>
+        <li><strong>Rückgabe:</strong> Die aktuelle <code>AppState</code>-Instanz.</li>
+    </ul>
+
+    <h4><code>config_to_nested(cfg: HPIOConfig) -> dict[str, Any]</code></h4>
+    <p>
+        Konvertiert eine <code>HPIOConfig</code>-Instanz in ein verschachteltes Dictionary, das für die Serialisierung oder Anzeige geeignet ist.
+    </p>
+    <ul>
+        <li><code>cfg</code> (HPIOConfig): Die zu konvertierende Konfiguration.</li>
+        <li><strong>Rückgabe:</strong> Ein verschachteltes Dictionary.</li>
+    </ul>
+
+    <h4><code>nested_to_config(data: dict[str, Any]) -> HPIOConfig</code></h4>
+    <p>
+        Konvertiert ein verschachteltes Dictionary zurück in eine <code>HPIOConfig</code>-Instanz.
+    </p>
+    <ul>
+        <li><code>data</code> (dict[str, Any]): Das zu konvertierende Dictionary.</li>
+        <li><strong>Rückgabe:</strong> Eine <code>HPIOConfig</code>-Instanz.</li>
+    </ul>
+
+    <h4><code>render_heatmap(phi: np.ndarray, agents_grid: np.ndarray, trails: list[list[tuple[float, float]]], iteration: int, best_val: float, overlay: bool, trail_length: int) -> bytes</code></h4>
+    <p>
+        Rendert eine Heatmap des Feldes (Phi-Werte) zusammen mit den Agentenpositionen und deren Pfaden.
+    </p>
+    <ul>
+        <li><code>phi</code> (np.ndarray): Die Phi-Werte des Feldes.</li>
+        <li><code>agents_grid</code> (np.ndarray): Die Positionen der Agenten im Grid-Koordinatensystem.</li>
+        <li><code>trails</code> (list[list[tuple[float, float]]]): Die Pfade der Agenten.</li>
+        <li><code>iteration</code> (int): Die aktuelle Iterationsnummer für das Overlay.</li>
+        <li><code>best_val</code> (float): Der beste Wert für das Overlay.</li>
+        <li><code>overlay</code> (bool): Ob das Overlay mit Iteration und Bestwert angezeigt werden soll.</li>
+        <li><code>trail_length</code> (int): Die maximale Länge der angezeigten Agentenpfade.</li>
+        <li><strong>Rückgabe:</strong> Das gerenderte Bild als PNG-Bytes.</li>
+    </ul>
+
+    <h4><code>update_trails(trails: list[list[tuple[float, float]]], agents_grid: np.ndarray, trail_length: int) -> list[list[tuple[float, float]]]</code></h4>
+    <p>
+        Aktualisiert die Pfade der Agenten basierend auf ihren aktuellen Grid-Positionen.
+    </p>
+    <ul>
+        <li><code>trails</code> (list[list[tuple[float, float]]]): Die bestehenden Pfade.</li>
+        <li><code>agents_grid</code> (np.ndarray): Die aktuellen Grid-Positionen der Agenten.</li>
+        <li><code>trail_length</code> (int): Die maximale Länge der Pfade.</li>
+        <li><strong>Rückgabe:</strong> Die aktualisierte Liste der Agentenpfade.</li>
+    </ul>
+
+    <h4><code>append_log(state: AppState, message: str) -> None</code></h4>
+    <p>
+        Fügt eine Nachricht zur Konsole des Anwendungszustands hinzu und begrenzt die Log-Größe.
+    </p>
+    <ul>
+        <li><code>state</code> (AppState): Der aktuelle Anwendungszustand.</li>
+        <li><code>message</code> (str): Die hinzuzufügende Log-Nachricht.</li>
+    </ul>
+
+    <h4><code>ensure_controller(state: AppState) -> None</code></h4>
+    <p>
+        Stellt sicher, dass der <code>HPIOController</code> initialisiert ist.
+        Wird aufgerufen, wenn der Controller <code>None</code> ist oder Parameter geändert wurden.
+    </p>
+    <ul>
+        <li><code>state</code> (AppState): Der aktuelle Anwendungszustand.</li>
+    </ul>
+
+    <h4><code>ensure_video_defaults(state: AppState) -> None</code></h4>
+    <p>
+        Stellt sicher, dass die Video-Parameter im Anwendungszustand mit Standardwerten initialisiert sind.
+    </p>
+    <ul>
+        <li><code>state</code> (AppState): Der aktuelle Anwendungszustand.</li>
+    </ul>
+
+    <h4><code>compute_expected_video_frames(state: AppState) -> int</code></h4>
+    <p>
+        Berechnet die erwartete Anzahl von Frames für die Videoaufnahme basierend auf der Iterationszahl und der Visualisierungsfrequenz.
+    </p>
+    <ul>
+        <li><code>state</code> (AppState): Der aktuelle Anwendungszustand.</li>
+        <li><strong>Rückgabe:</strong> Die erwartete Anzahl von Video-Frames.</li>
+    </ul>
+
+    <h4><code>format_bytes(num_bytes: int) -> str</code></h4>
+    <p>
+        Formatiert eine Byte-Zahl in eine lesbare String-Darstellung (z.B. "1.2 MiB").
+    </p>
+    <ul>
+        <li><code>num_bytes</code> (int): Die zu formatierende Byte-Zahl.</li>
+        <li><strong>Rückgabe:</strong> Der formatierte String.</li>
+    </ul>
+
+    <h4><code>execute_step(state: AppState) -> None</code></h4>
+    <p>
+        Führt einen Optimierungsschritt aus, aktualisiert den Anwendungszustand, die Metriken und die Visualisierung.
+        Verwaltet auch die Videoaufnahme von Frames.
+    </p>
+    <ul>
+        <li><code>state</code> (AppState): Der aktuelle Anwendungszustand.</li>
+    </ul>
+
+    <h4><code>render_status_box(result: Optional[StepResult], state: AppState) -> None</code></h4>
+    <p>
+        Rendert die Statusbox in der Streamlit-UI, die aktuelle Iteration, Bestwert und Position anzeigt.
+    </p>
+    <ul>
+        <li><code>result</code> (Optional[StepResult]): Das Ergebnis des letzten Schritts.</li>
+        <li><code>state</code> (AppState): Der aktuelle Anwendungszustand.</li>
+    </ul>
+
+    <h4><code>render_console(logs: list[str]) -> None</code></h4>
+    <p>
+        Rendert die Konsolen-Ausgabe in der Streamlit-UI.
+    </p>
+    <ul>
+        <li><code>logs</code> (list[str]): Die Liste der Log-Nachrichten.</li>
+    </ul>
+
+    <h4><code>render_parameter_snapshot(cfg: HPIOConfig) -> None</code></h4>
+    <p>
+        Rendert einen Snapshot der aktuellen HPIO-Konfiguration als JSON in der Streamlit-UI.
+    </p>
+    <ul>
+        <li><code>cfg</code> (HPIOConfig): Die anzuzeigende Konfiguration.</li>
+    </ul>
+
+    <h4><code>page_run(state: AppState) -> None</code></h4>
+    <p>
+        Implementiert die "Start / Run"-Seite der Streamlit-Anwendung.
+        Hier können Benutzer Zielfunktion, Seed, Iterationen und Visualisierungseinstellungen anpassen,
+        den Optimierungslauf starten, pausieren, stoppen oder zurücksetzen.
+        Es gibt auch eine Sektion für Live-Parameteranpassungen.
+    </p>
+    <ul>
+        <li><code>state</code> (AppState): Der aktuelle Anwendungszustand.</li>
+    </ul>
+
+    <h4><code>page_parameters(state: AppState) -> None</code></h4>
+    <p>
+        Implementiert die "Parameter"-Seite der Streamlit-Anwendung.
+        Hier können Benutzer detaillierte Parameter für das Feld und die Agenten anpassen.
+    </p>
+    <ul>
+        <li><code>state</code> (AppState): Der aktuelle Anwendungszustand.</li>
+    </ul>
+
+    <h4><code>page_algorithms(state: AppState) -> None</code></h4>
+    <p>
+        Implementiert die "Algorithmus-Bibliothek"-Seite.
+        Ermöglicht den Vergleich von HPIO mit klassischen Optimierungsalgorithmen wie Differential Evolution, Particle Swarm Optimization und Genetischem Algorithmus.
+        Benutzer können Parameter für diese Algorithmen einstellen und deren Konvergenzmetriken exportieren.
+    </p>
+    <ul>
+        <li><code>state</code> (AppState): Der aktuelle Anwendungszustand.</li>
+    </ul>
+
+    <h4><code>load_presets() -> dict[str, HPIOConfig]</code></h4>
+    <p>
+        Lädt vordefinierte HPIO-Konfigurations-Presets.
+    </p>
+    <ul>
+        <li><strong>Rückgabe:</strong> Ein Dictionary von Preset-Namen zu <code>HPIOConfig</code>-Instanzen.</li>
+    </ul>
+
+    <h4><code>diff_configs(cfg_a: HPIOConfig, cfg_b: HPIOConfig) -> list[tuple[str, Any, Any]]</code></h4>
+    <p>
+        Vergleicht zwei <code>HPIOConfig</code>-Instanzen und gibt eine Liste der Unterschiede zurück.
+    </p>
+    <ul>
+        <li><code>cfg_a</code> (HPIOConfig): Die erste Konfiguration.</li>
+        <li><code>cfg_b</code> (HPIOConfig): Die zweite Konfiguration.</li>
+        <li><strong>Rückgabe:</strong> Eine Liste von Tupeln <code>(Parameterpfad, Wert_A, Wert_B)</code> für abweichende Parameter.</li>
+    </ul>
+
+    <h4><code>
+    </main>
+</body>
+</html>
