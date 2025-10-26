@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "Bitte zitieren Sie dieses Werk wie unten angegeben."
+title: "HPIO Optimization Suite"
+version: "1.0.0"
+date-released: 2025-10-26
+authors:
+  - family-names: "Krümmel"
+    given-names: "Ralf"
+keywords: [HPIO, Optimierung, Streamlit, Python, DE, PSO, GA, Pheromone]
+license: MIT
+repository-code: "https://github.com/kruemmel-python/HPIO"
+abstract: >
+  Hybrid Phase Interaction Optimization (HPIO) – interaktive Suite für
+  Optimierung, Visualisierung, Benchmarking und Video-Export.
