@@ -78,12 +78,12 @@ class SwarmController:
     drones: list[Drone] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        h, w = self.field.shape  # KORREKT: (height, width)
+        h, w = self.field.shape  # (height, width)
         rng = np.random.default_rng(1234)
         self.drones = [
             Drone(
-                pos=np.array([rng.uniform(0, w - 1), rng.uniform(0, h - 1)], dtype=np.float32),
-                vel=rng.normal(0, 0.1, size=2).astype(np.float32),
+                pos=np.array([rng.uniform(0, w), rng.uniform(0, h)], dtype=np.float32),
+                vel=np.zeros(2, dtype=np.float32),
             )
             for _ in range(self.num_drones)
         ]
@@ -107,9 +107,13 @@ class SwarmController:
         if not self.drones:
             return
 
-        # Feldgradient
-        gy, gx = np.gradient(self.field.astype(np.float32))  # gy=d/dy, gx=d/dx
         h, w = self.field.shape
+        # Feldgradient
+        gy, gx = np.gradient(self.field.astype(np.float32), edge_order=1)
+
+        # Globalen Drift entfernen
+        gx_bias = float(gx.mean())
+        gy_bias = float(gy.mean())
 
         # Globaler Schwerpunkt (für leichte Kohärenz)
         mean_pos = np.mean([d.pos for d in self.drones], axis=0)
@@ -118,10 +122,13 @@ class SwarmController:
             if not d.active:
                 continue
 
-            # Bilinear gesampelter Gradient
-            gx_val = bilinear_sample(gx, d.pos[0], d.pos[1])
-            gy_val = bilinear_sample(gy, d.pos[0], d.pos[1])
-            grad = np.array([gx_val, gy_val], dtype=np.float32)
+            ix = int(np.clip(np.round(d.pos[0]), 0, w - 2))
+            iy = int(np.clip(np.round(d.pos[1]), 0, h - 2))
+
+            grad = np.array([
+                gx[iy, ix] - gx_bias,
+                gy[iy, ix] - gy_bias,
+            ], dtype=np.float32)
             gn = np.linalg.norm(grad) + 1e-8
             grad_dir = grad / gn
 
@@ -290,7 +297,7 @@ def page_dronesim(state: AppState) -> None:
         drones_xy = np.array([d.pos for d in swarm.drones if d.active])
 
         fig, ax = plt.subplots(figsize=(5.6, 5.6))
-        ax.imshow(img, cmap="plasma", origin="lower")
+        ax.imshow(img, cmap="plasma", origin="upper")
         if len(drones_xy):
             ax.scatter(
                 drones_xy[:, 0], drones_xy[:, 1],
