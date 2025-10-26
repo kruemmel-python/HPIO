@@ -133,5 +133,4 @@ HPIO-Optimization-Suite/
 ```
 
 
-oder möchtest du, dass ich sie gleich als **GitHub-Release-Paket (v1.0)** zusammen mit der Doku, dem Diagramm und dem Headerbild bündele?
-```
+`
