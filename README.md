@@ -1,4 +1,3 @@
-
 <p align="center">
   <img width="1408" height="768" alt="Herunterladen" src="https://github.com/user-attachments/assets/917dc33a-243b-4fb2-90fa-0d1355d74346" />
 </p>
@@ -28,18 +27,15 @@ Das System kombiniert *biologisch inspirierte Schwarmdynamik* mit *numerischer P
 pip install numpy pandas streamlit matplotlib imageio
 # optional:
 pip install pyopencl opencv-python
-````
+```
 
 ### Start
-
 ```bash
 streamlit run streamlit_app.py
 ```
-
-→ öffnet sich im Browser unter [http://localhost:8501](http://localhost:8501)
+→ öffnet sich im Browser unter http://localhost:8501
 
 ### Videoaufnahme
-
 ```bash
 python hpio_record.py rastrigin --video runs/rastrigin.mp4 --fps 30 --size 1280x720 --overlay
 ```
@@ -50,7 +46,7 @@ python hpio_record.py rastrigin --video runs/rastrigin.mp4 --fps 30 --size 1280x
 
 | Datei                     | Beschreibung                                                       |
 | ------------------------- | ------------------------------------------------------------------ |
-| `hpio.py`                 | Kern des HPIO-Algorithmus (Feld, Agenten, PSO, GA, DE)             |
+| `hpio.py`                 | Kern des HPIO-Algorithmus (Feld, Agenten, PSO, GA, DE)            |
 | `streamlit_app.py`        | Interaktive GUI mit Live-Heatmap, Trail-Tracking und Video-Capture |
 | `hpio_record.py`          | Recorder für automatisierte Videoaufnahmen                         |
 | `HPIO_Commands.md`        | Befehlsreferenz mit Presets und GPU/CPU-Varianten                  |
@@ -63,22 +59,74 @@ python hpio_record.py rastrigin --video runs/rastrigin.mp4 --fps 30 --size 1280x
 
 ## 🎛️ Features
 
-* **Interaktive Visualisierung** mit Agenten-Trails und Heatmap
-* **Live-Parameter-Tuning** während des Laufs
-* **GPU-Beschleunigung** über PyOpenCL
-* **Video-Export (FFmpeg / OpenCV)**
-* Vergleich: **PSO**, **GA**, **DE**
-* **Early-Stopping**, **Annealing**, **Local Polish**
+- **Interaktive Visualisierung** mit Agenten-Trails und Heatmap  
+- **Live-Parameter-Tuning** während des Laufs  
+- **GPU-Beschleunigung** über PyOpenCL  
+- **Video-Export (FFmpeg / OpenCV)**  
+- Vergleich: **PSO**, **GA**, **DE**  
+- **Early-Stopping**, **Annealing**, **Local Polish**
+
+---
+
+## 🧭 Interaktives Kontrollzentrum: Die Streamlit-App (`streamlit_app.py`)
+
+Das **HPIO Control Center** ist eine vollständige Web-Anwendung zur experimentellen Optimierung, Visualisierung und Analyse. Sie nutzt modulare Seiten, klare Zustandsverwaltung (`AppState`) und ein flexibles Rendering mit Heatmaps, Video-Export und Benchmark-Tools.
+
+### Architekturüberblick
+- **AppState / Controller** – zentrale Verwaltung von Laufparametern, Logs, Metriken und Video-Frames.  
+- **HPIOController** – kapselt den Optimierer (`HPIO`) und liefert pro Schritt ein `StepResult`.  
+- **Session-Persistence** – Zustände bleiben via `st.session_state` erhalten.  
+- **GPU-Erkennung** – automatische Prüfung auf PyOpenCL; CPU-Fallback.  
+- **Heatmap-Renderer** – logarithmische Feld-Darstellung mit Agentenpfaden und Trails.  
+- **Video-Engine** – `imageio`/FFmpeg, exportiert MP4/MKV/AVI mit CRF & Encoder-Preset.
+
+### 1) Start / Run – Zentrale Steuerung
+- Auswahl der **Zielfunktion** (Rastrigin, Ackley, Himmelblau) und **GPU-Toggle**.  
+- Steuerung: **Seed**, **Iterationen**, **Viz-Frequenz**, **Overlay**, **Traillänge**.  
+- **Kontrollen:** Start • Pause/Weiter • Stop • Schritt vor • Reset • Reset + neuer Seed.  
+- **Live-Parameter-Anpassung** im Lauf: `step`, `curiosity`, `momentum`, `deposit_sigma`, `coherence_gain`, sowie `w_intensity`, `w_phase`, `phase_span_pi`.  
+- Visualisierung: Heatmap mit Trails, **Status**, **Konsolen-Log**, **Parameter-Snapshot** und **Live-Chart**.
+
+### 2) Parameter – Labor für Feineinstellungen
+- **Feld**: `grid_size`, `relax_alpha`, `evap`, `kernel_sigma`  
+- **Agenten & Ablage**: `count`, `step`, `curiosity`, `momentum`, `deposit_sigma`, `coherence_gain`  
+- Erweiterte Steuerung: `w_intensity`, `w_phase`, `phase_span_pi`, **Annealing**, **Early-Stopping**, `polish_h`  
+- **Warnungen** bei großen Grids; **Defaults** wiederherstellen; **Preset-Übernahme** vorbereiten.
+
+### 3) Algorithmen – Vergleichende Benchmark-Suite
+- **Differential Evolution (DE)**, **Particle Swarm Optimization (PSO)**, **Genetischer Algorithmus (GA)**.  
+- Je Verfahren eigene Hyperparameter (Population/Schwarm, Mutation, Crossover, Inertia, Cognitive, Social, …).  
+- Ergebnisse: Bestwert, beste Position, **Konvergenzdiagramme**, **CSV/JSON-Export**.
+
+### 4) Presets – Konfigurationsmanagement
+- Vorinstallierte GPU-/CPU-Presets; Import/Export eigener Presets (JSON).  
+- **Diff-Ansicht** zwischen aktuellem Setup und Preset.  
+- **„Copy as CLI“** – generiert reproduzierbaren `hpio_record.py`-Befehl.
+
+### 5) Aufnahme & Export – Dokumentation & Reproduktion
+- **Videoaufnahme** mit Dateiname, Format (MP4/MKV/AVI), FPS, Viz-Frequenz, Overlay, **Encoder-Preset** und **CRF**.  
+- Start/Stop, Fortschrittsanzeige, Frame-Limit-Handling (5 000).  
+- Artefakte: **Config (JSON)**, **Best‑Trajectory (CSV)**, **Metriken (CSV/JSON)**, **Snapshots (ZIP)**, **Logs (TXT)**.
+
+### 6) Experimente – Batch- & Benchmark-Framework
+- **Seeds-Sweep**, **Preset-Vergleich**, **Parameter-Raster** (aus Werten oder CSV-Tabelle).  
+- Ergebnisse tabellarisch; **JSON-Gesamtexport**.
+
+### 7) Hilfe / Dokumentation
+- Kurzbeschreibung von HPIO (Feld Φ, Agenten, Ablage-/Relaxationsmechanismen).  
+- **Parameter-Glossar**, Troubleshooting, Performance-Hinweise.
+
+**Technische Besonderheiten:** Hot‑Reload via `trigger_rerun()`, Dataclasses & Typisierung, GPU-Fallback, modulare Seitenstruktur.
 
 ---
 
 ## 🧠 Architektur
 
-HPIO basiert auf einer **schichtbasierten Architektur**, die in deinem *Whitepaper* detailliert beschrieben ist:
+HPIO basiert auf einer **schichtbasierten Architektur**, die im *Whitepaper* detailliert beschrieben ist:
 
-* **Frontend (Streamlit-GUI)** – Visualisierung & Kontrolle
-* **Backend (Algorithmus-Engine)** – Optimierung & Analyse
-* **Recorder-Modul** – Persistente Aufzeichnung & Export
+- **Frontend (Streamlit-GUI)** – Visualisierung & Kontrolle  
+- **Backend (Algorithmus-Engine)** – Optimierung & Analyse  
+- **Recorder-Modul** – Persistente Aufzeichnung & Export
 
 ```mermaid
 flowchart LR
@@ -101,7 +149,6 @@ flowchart LR
 ---
 
 ## 📂 Projektstruktur
-
 ```plaintext
 HPIO-Optimization-Suite/
 ├── hpio.py
@@ -117,20 +164,12 @@ HPIO-Optimization-Suite/
 
 ---
 
-## 📸 Screenshots
-
----
-
 ## 📄 Lizenz & Autor
 
-**Autor:** Ralf Krümmel
-**Version:** 1.0 · Oktober 2025
-**Lizenz:** MIT License
+**Autor:** Ralf Krümmel  
+**Version:** 1.0 · Oktober 2025  
+**Lizenz:** MIT License  
 © 2025 – *Hybrid Phase Interaction Optimization (HPIO)*
 
 > *“Optimization meets Nature – the beauty of convergence made visible.”*
 
-```
-
-
-`
