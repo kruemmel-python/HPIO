@@ -403,8 +403,8 @@ def render_console(logs: list[str]) -> None:
         "Konsole",
         value="\n".join(logs[-400:]),
         height=360,
-        key="console_textarea",
         label_visibility="collapsed",
+        disabled=True,
     )
 
 
