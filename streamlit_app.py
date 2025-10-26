@@ -10,7 +10,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from itertools import product
 from typing import Any, Optional
-
+from streamlit_dronesim_page import page_dronesim
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -378,6 +378,7 @@ def execute_step(state: AppState) -> None:
         return
 
     state.last_result = result
+    st.session_state["phi_snapshot"] = result.field_phi.astype(np.float32)
     fps = 1.0 / result.elapsed if result.elapsed > 1e-9 else float("inf")
     state.fps = fps
     message = (
@@ -646,6 +647,8 @@ def page_run(state: AppState) -> None:
             ensure_controller(state)
             if state.controller:
                 state.controller.reset(keep_seed=False)
+                if "phi_snapshot" in st.session_state:
+                    del st.session_state["phi_snapshot"]
                 append_log(state, "Reset mit neuem Seed")
                 state.last_result = None
                 state.last_plot_png = None
@@ -1839,6 +1842,7 @@ def main() -> None:
         "Presets": page_presets,
         "Aufnahme & Export": page_recording,
         "Experimente": page_experiments,
+        "Drohnen-Simulation": page_dronesim,  
         "Hilfe": page_help,
     }
     page_name = st.sidebar.radio("Seite wählen", list(pages.keys()))
